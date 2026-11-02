@@ -32,11 +32,11 @@ Loading a BPF-LSM program requires:
 - **`bpf` present in `/sys/kernel/security/lsm`** (i.e. `lsm=...,bpf` on the
   kernel command line). Check with `cat /sys/kernel/security/lsm`.
 
-The loader is intentionally not bundled here as a half-working stub. Use either:
-
-- **libbpf** (`bpf_object__open_file` → `load` → `bpf_program__attach_lsm`), or
-- **cilium/ebpf** from Go (`ebpf.LoadCollectionSpec` → `AttachLSM`), which is the
-  path the Go sensor will adopt once that dependency is vendored.
+The Go loader is implemented in `internal/enforce` (cilium/ebpf), compiled in
+with the `ebpf` build tag and driven by `cau-kernel enforce run|on|off|status`.
+It embeds this object, so a `make enforce` binary is self-contained. See the
+repo README. (A libbpf C loader — `bpf_object__open_file` → `load` →
+`bpf_program__attach_lsm` — is the equivalent path if you prefer C.)
 
 Because the self-contained object avoids kernel-struct access, it needs no CO-RE
 relocations and loads against the running kernel's BTF as-is.

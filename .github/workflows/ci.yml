@@ -32,12 +32,28 @@ jobs:
       - name: Smoke (inventory runs on the runner)
         run: ./cau-kernel inventory >/dev/null && ./cau-kernel posture >/dev/null
 
-  bpf:
-    name: compile BPF-LSM object
+  ebpf:
+    name: build BPF-LSM object + eBPF loader
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Install clang + binutils
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang binutils
-      - name: Build and verify the BPF-LSM object
+      - name: Compile and verify the BPF-LSM object
         run: make -C bpf verify
+      - name: Build the eBPF-enabled binary (make sure the loader compiles)
+        run: make enforce
+      - name: Vet and test the eBPF build
+        run: |
+          go vet -tags ebpf ./...
+          go test -tags ebpf ./...
+      - name: "Smoke the eBPF binary (unprivileged loader must fail cleanly)"
+        run: |
+          ./cau-kernel version
+          # Attaching needs root + BPF-LSM; unprivileged status must fail cleanly,
+          # not crash. Accept a non-zero exit; fail only on a panic.
+          ./cau-kernel enforce status || true

@@ -9,9 +9,11 @@ It has two halves:
   `/proc` and `/sys` — loaded modules and taint, the eBPF surface, kernel-memory
   access channels, and hardening posture — and reports tamper/rootkit-relevant
   **drift against a signed baseline**. No kernel module, portable, runs anywhere.
-- **Enforcement (eBPF, [`bpf/`](bpf/README.md)).** A BPF-LSM program that can
-  freeze new process execution on a verified tamper signal. Opt-in, privileged,
-  and separate from detection.
+- **Enforcement (eBPF, [`bpf/`](bpf/README.md) + `cau-kernel enforce`).** A
+  BPF-LSM program that can freeze new process execution on a verified tamper
+  signal, with a cilium/ebpf loader. Opt-in, privileged, and compiled in only
+  with the `ebpf` build tag (`make enforce`) so the default binary stays
+  dependency-free.
 
 > Reference docs: the engine repository **[s-b-repo/cau](https://github.com/s-b-repo/cau)**,
 > whose `PLAN.md` → *"Kernel-level support & anti-tamper"* and *"Sensor
@@ -46,6 +48,24 @@ regression, or a **hidden-module suspect** (present in `/sys/module` but missing
 from `/proc/modules`). Run it from a timer, or on a verified boot, and route the
 alert to the console.
 
+## Enforcement (eBPF build)
+
+```sh
+make enforce                 # compile the BPF object + build with -tags ebpf (needs clang)
+sudo ./cau-kernel enforce run     # resident: attach the BPF-LSM guard (state: allow)
+sudo ./cau-kernel enforce on      # freeze: deny every new execve
+sudo ./cau-kernel enforce off     # release
+./cau-kernel enforce status       # report the current state
+```
+
+`run` holds the LSM attachment and pins the control map to bpffs; `on`/`off`/
+`status` flip or read that pinned map. If `run` dies, the program detaches and
+execution is no longer frozen — **fail-open**, so a crash can never brick the
+host. Attaching needs root (or `CAP_BPF` + `CAP_MAC_ADMIN`) and a kernel with
+`CONFIG_BPF_LSM` and `bpf` in `/sys/kernel/security/lsm`. The default binary
+(built without `-tags ebpf`) has no eBPF dependency and reports that enforcement
+is unavailable.
+
 ## What it reads
 
 | Area | Signals |
@@ -64,11 +84,13 @@ rewrites the baseline cannot forge its signature.
 ## Honest scope
 
 This is a **scheduled/triggered** integrity sensor plus an execution-freeze
-enforcement primitive. Continuous, in-kernel real-time mediation with rich
-policy, boot-measured (TPM/IMA) attestation, kdump capture, and a DKMS fallback
-module are the larger roadmap items in the engine's plan; the pieces here are the
-ones that stand on their own, compile, and are tested. See [`bpf/README.md`](bpf/README.md)
-for the enforcement build/load requirements.
+enforcement primitive (load + attach + control, shipped). Still open, by
+honesty: **rich per-inode/path BPF-LSM policy** (the CO-RE variant), a **DKMS**
+out-of-tree fallback module, **vkernel** guest introspection, **TPM/IMA**
+boot-measured attestation, and **kdump** capture. Those need hardware/kernel
+environments a userspace build cannot exercise; they are tracked in the engine's
+plan. The pieces here stand on their own, compile, and are tested. See
+[`bpf/README.md`](bpf/README.md) for enforcement build/load requirements.
 
 ## License
 
