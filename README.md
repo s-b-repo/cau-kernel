@@ -1,5 +1,7 @@
 # cau-kernel
 
+[![ci](https://github.com/s-b-repo/cau-kernel/actions/workflows/ci.yml/badge.svg)](https://github.com/s-b-repo/cau-kernel/actions/workflows/ci.yml)
+
 Kernel-integrity sensor for the **CAU EDR** program — the kernel-level
 anti-tamper work from the engine's roadmap, as its own artifact.
 

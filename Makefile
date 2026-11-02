@@ -14,7 +14,14 @@ CLANG   ?= clang
 BINARY  ?= cau-kernel
 EBPF_OBJ := internal/enforce/lsm_guard.bpf.o
 
-.PHONY: build test vet fmt-check bpf-object enforce clean
+.PHONY: build test vet fmt-check bpf-object enforce fuzz clean
+
+FUZZTIME ?= 20s
+# Coverage-guided fuzzing of the untrusted-input parsers. Seed corpora also run
+# as fast unit tests under `make test`, so this target is for hunting.
+fuzz:
+	$(GO) test ./internal/kstate/ -run '^$$' -fuzz '^FuzzCollect$$' -fuzztime $(FUZZTIME)
+	$(GO) test ./internal/ksign/  -run '^$$' -fuzz '^FuzzOpen$$'    -fuzztime $(FUZZTIME)
 
 build:
 	$(GO) build -o $(BINARY) .
