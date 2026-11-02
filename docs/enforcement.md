@@ -35,8 +35,24 @@ sudo ./cau-kernel enforce off     # release
 `run` attaches the program to `lsm/bprm_check_security` and pins the control map
 to `/sys/fs/bpf/cau-kernel`; `on`/`off`/`status` flip or read that pinned map.
 The attachment lives only as long as `run`, so killing it releases the freeze.
-Loading needs root (or `CAP_BPF` + `CAP_MAC_ADMIN`) and a BPF-LSM kernel. See
-[`bpf/README.md`](../bpf/README.md), including the CO-RE path-aware policy variant.
+Loading needs root (or `CAP_BPF` + `CAP_MAC_ADMIN`) and a BPF-LSM kernel.
+
+### Path-aware policy (per-inode blocklist)
+
+Load the CO-RE object (built by `make -C bpf core`, see [`bpf/README.md`](../bpf/README.md))
+to add per-inode denial on top of the global freeze:
+
+```sh
+sudo ./cau-kernel enforce run --core bpf/lsm_fileopen.bpf.o   # resident, path-aware
+sudo ./cau-kernel enforce block   /path/to/implant            # deny opening that inode
+sudo ./cau-kernel enforce unblock /path/to/implant
+./cau-kernel enforce blocked                                   # list blocked inodes
+```
+
+`run --core` loads `lsm/file_open` and pins both the freeze flag and the
+`cau_blocked_inodes` map; `block`/`unblock` resolve a path to its inode and flip
+that pinned map, so a responder can quarantine a specific dropped file from being
+opened while leaving the rest of the system running.
 
 ## Kernel module
 

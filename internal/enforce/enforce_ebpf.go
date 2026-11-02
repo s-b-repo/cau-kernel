@@ -38,25 +38,44 @@ const (
 	progName = "cau_exec_guard"
 	mapName  = "cau_enforce"
 	pinDir   = "/sys/fs/bpf/cau-kernel"
+	// coreProgName / inodeMapName are in the CO-RE path-aware object.
+	coreProgName = "cau_file_open"
+	inodeMapName = "cau_blocked_inodes"
 )
 
-func mapPinPath() string { return filepath.Join(pinDir, mapName) }
+func mapPinPath() string      { return filepath.Join(pinDir, mapName) }
+func inodeMapPinPath() string { return filepath.Join(pinDir, inodeMapName) }
 
 // Guard is a loaded-and-attached resident guard. Hold it for the lifetime of
-// the enforcer; Close detaches the program and removes the pinned map.
+// the enforcer; Close detaches the program and removes the pinned maps.
 type Guard struct {
 	coll *ebpf.Collection
 	lnk  link.Link
+	core bool
 }
 
-// Load parses the embedded object, loads it, attaches the LSM program, pins the
-// control map to bpffs so a control CLI can reach it, and starts in the ALLOW
-// state (not frozen). The caller runs the resident loop and Closes on exit.
-func Load() (*Guard, error) {
+// Load attaches an execution-freeze guard and pins its control map to bpffs so
+// a control CLI can reach it, starting in the ALLOW state. With corePath == ""
+// it loads the embedded self-contained guard (global freeze only). With a
+// corePath it loads the CO-RE path-aware object from that file, attaching
+// lsm/file_open and also pinning the per-inode blocklist map. The caller runs
+// the resident loop and Closes on exit.
+func Load(corePath string) (*Guard, error) {
 	if err := os.MkdirAll(pinDir, 0o700); err != nil {
 		return nil, fmt.Errorf("enforce: create bpffs pin dir %s (is bpffs mounted?): %w", pinDir, err)
 	}
-	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(guardObject))
+	prog := progName
+	obj := guardObject
+	core := corePath != ""
+	if core {
+		data, err := os.ReadFile(corePath)
+		if err != nil {
+			return nil, fmt.Errorf("enforce: read CO-RE object %s: %w", corePath, err)
+		}
+		obj = data
+		prog = coreProgName
+	}
+	spec, err := ebpf.LoadCollectionSpecFromReader(bytes.NewReader(obj))
 	if err != nil {
 		return nil, fmt.Errorf("enforce: load spec: %w", err)
 	}
@@ -69,28 +88,44 @@ func Load() (*Guard, error) {
 		coll.Close()
 		return nil, fmt.Errorf("enforce: control map %q not found", mapName)
 	}
-	// Start in ALLOW, then pin so control invocations can flip it.
 	if err := setFlag(m, false); err != nil {
 		coll.Close()
 		return nil, err
 	}
-	_ = os.Remove(mapPinPath()) // clear a stale pin from a previous run
+	_ = os.Remove(mapPinPath())
 	if err := m.Pin(mapPinPath()); err != nil {
 		coll.Close()
 		return nil, fmt.Errorf("enforce: pin control map: %w", err)
 	}
-	prog, ok := coll.Programs[progName]
-	if !ok {
-		coll.Close()
-		return nil, fmt.Errorf("enforce: program %q not found", progName)
+	if core {
+		im, ok := coll.Maps[inodeMapName]
+		if !ok {
+			_ = os.Remove(mapPinPath())
+			coll.Close()
+			return nil, fmt.Errorf("enforce: inode map %q not found in CO-RE object", inodeMapName)
+		}
+		_ = os.Remove(inodeMapPinPath())
+		if err := im.Pin(inodeMapPinPath()); err != nil {
+			_ = os.Remove(mapPinPath())
+			coll.Close()
+			return nil, fmt.Errorf("enforce: pin inode map: %w", err)
+		}
 	}
-	l, err := link.AttachLSM(link.LSMOptions{Program: prog})
+	p, ok := coll.Programs[prog]
+	if !ok {
+		_ = os.Remove(mapPinPath())
+		_ = os.Remove(inodeMapPinPath())
+		coll.Close()
+		return nil, fmt.Errorf("enforce: program %q not found", prog)
+	}
+	l, err := link.AttachLSM(link.LSMOptions{Program: p})
 	if err != nil {
 		_ = os.Remove(mapPinPath())
+		_ = os.Remove(inodeMapPinPath())
 		coll.Close()
 		return nil, fmt.Errorf("enforce: attach LSM (need CONFIG_BPF_LSM and `bpf` in /sys/kernel/security/lsm): %w", err)
 	}
-	return &Guard{coll: coll, lnk: l}, nil
+	return &Guard{coll: coll, lnk: l, core: core}, nil
 }
 
 // Wait blocks until ctx is done (the resident enforcer loop).
@@ -106,10 +141,58 @@ func (g *Guard) Close() error {
 		}
 	}
 	_ = os.Remove(mapPinPath())
+	if g.core {
+		_ = os.Remove(inodeMapPinPath())
+	}
 	if g.coll != nil {
 		g.coll.Close()
 	}
 	return first
+}
+
+// Core reports whether this guard loaded the CO-RE path-aware object (and thus
+// has a per-inode blocklist).
+func (g *Guard) Core() bool { return g.core }
+
+// BlockInode adds (block=true) or removes (block=false) an inode from the pinned
+// per-inode blocklist. Requires a CO-RE enforcer to be running (that map pinned).
+func BlockInode(ino uint64, block bool) error {
+	m, err := ebpf.LoadPinnedMap(inodeMapPinPath(), nil)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return errors.New("enforce: no CO-RE enforcer running (inode blocklist not pinned); start `enforce run --core <obj>`")
+		}
+		return fmt.Errorf("enforce: open inode blocklist: %w", err)
+	}
+	defer m.Close()
+	if block {
+		var v uint8 = 1
+		return m.Update(&ino, &v, ebpf.UpdateAny)
+	}
+	if err := m.Delete(&ino); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+		return fmt.Errorf("enforce: unblock inode: %w", err)
+	}
+	return nil
+}
+
+// ListBlocked returns the inodes currently in the pinned blocklist.
+func ListBlocked() ([]uint64, error) {
+	m, err := ebpf.LoadPinnedMap(inodeMapPinPath(), nil)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, errors.New("enforce: no CO-RE enforcer running (inode blocklist not pinned)")
+		}
+		return nil, fmt.Errorf("enforce: open inode blocklist: %w", err)
+	}
+	defer m.Close()
+	var out []uint64
+	var key uint64
+	var val uint8
+	it := m.Iterate()
+	for it.Next(&key, &val) {
+		out = append(out, key)
+	}
+	return out, it.Err()
 }
 
 // SetPinned flips the pinned control map without needing the resident Guard —
