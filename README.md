@@ -9,11 +9,17 @@ It has two halves:
   `/proc` and `/sys` — loaded modules and taint, the eBPF surface, kernel-memory
   access channels, and hardening posture — and reports tamper/rootkit-relevant
   **drift against a signed baseline**. No kernel module, portable, runs anywhere.
-- **Enforcement (eBPF, [`bpf/`](bpf/README.md) + `cau-kernel enforce`).** A
-  BPF-LSM program that can freeze new process execution on a verified tamper
-  signal, with a cilium/ebpf loader. Opt-in, privileged, and compiled in only
-  with the `ebpf` build tag (`make enforce`) so the default binary stays
-  dependency-free.
+- **Boot attestation (userspace Go, `cau-kernel attest`).** Records and verifies
+  TPM PCRs, the IMA runtime-measurement log summary, and kdump readiness against
+  a signed baseline — a PCR that changed means the boot chain differs.
+- **Enforcement, two backends.** Both implement the same execution-freeze
+  primitive; pick per host:
+  - [`bpf/`](bpf/README.md) + `cau-kernel enforce` — a **BPF-LSM** program with a
+    cilium/ebpf loader. The safer default; `ebpf` build tag (`make enforce`).
+  - [`kmod/`](kmod/README.md) — a **loadable kernel module** (kretprobe
+    mediation). *More capable than eBPF* (arbitrary in-kernel C, no verifier,
+    hooks eBPF can't reach) for where BPF-LSM cannot serve — at the cost of
+    out-of-tree risk and kernel taint. DKMS-packaged, signed for Secure Boot.
 
 > Reference docs: the engine repository **[s-b-repo/cau](https://github.com/s-b-repo/cau)**,
 > whose `PLAN.md` → *"Kernel-level support & anti-tamper"* and *"Sensor
@@ -83,14 +89,21 @@ rewrites the baseline cannot forge its signature.
 
 ## Honest scope
 
-This is a **scheduled/triggered** integrity sensor plus an execution-freeze
-enforcement primitive (load + attach + control, shipped). Still open, by
-honesty: **rich per-inode/path BPF-LSM policy** (the CO-RE variant), a **DKMS**
-out-of-tree fallback module, **vkernel** guest introspection, **TPM/IMA**
-boot-measured attestation, and **kdump** capture. Those need hardware/kernel
-environments a userspace build cannot exercise; they are tracked in the engine's
-plan. The pieces here stand on their own, compile, and are tested. See
-[`bpf/README.md`](bpf/README.md) for enforcement build/load requirements.
+Shipped and building: the detection sensor, boot attestation (TPM/IMA/kdump
+drift), the BPF-LSM enforcement guard **and** the kernel-module backend (CI
+compiles both). Still open, by honesty:
+
+- **Rich per-inode/path BPF-LSM policy** — the CO-RE variant (needs libbpf-dev +
+  a generated `vmlinux.h`); the recipe is in [`bpf/README.md`](bpf/README.md). The
+  shipped guard is a global execution-freeze, not per-file policy yet.
+- **vkernel** — KVM/QEMU guest introspection (driven from the hypervisor, needs a
+  VMM + libvmi); documented, not built here.
+- **kdump *capture*** — this sensor reports crash-capture *readiness*; forcing a
+  kdump snapshot on tamper is a privileged, destructive action left to the
+  operator's response policy, not performed by the sensor.
+
+Those need hardware/kernel environments (VMM, Secure Boot, a crash kernel) a CI
+or sandbox build cannot fully exercise; they are tracked in the engine's plan.
 
 ## License
 

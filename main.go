@@ -44,6 +44,7 @@ Usage:
   cau-kernel baseline  --out file [--root /] [--sign-key hex]   record a (signed) baseline
   cau-kernel drift     --baseline file [--root /] [--pubkey hex] [--all]   detect drift
   cau-kernel enforce   run|on|off|status    BPF-LSM execution-freeze guard (eBPF build, root)
+  cau-kernel attest    show|baseline|verify  measured-boot state: TPM PCRs, IMA, kdump
   cau-kernel version
 
 Drift exits 1 when a security-relevant change is found (a loaded module, a new
@@ -69,6 +70,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return cmdDrift(args[1:], stdout, stderr)
 	case "enforce":
 		return cmdEnforce(args[1:], stdout, stderr)
+	case "attest":
+		return cmdAttest(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		fmt.Fprintf(stdout, "cau-kernel %s\n", version)
 		return exitOK

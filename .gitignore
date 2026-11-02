@@ -1,3 +1,12 @@
 /cau-kernel
 *.bpf.o
 vmlinux.h
+# kernel-module build artifacts
+kmod/*.ko
+kmod/*.o
+kmod/*.mod
+kmod/*.mod.c
+kmod/.*.cmd
+kmod/Module.symvers
+kmod/modules.order
+kmod/.tmp_versions/

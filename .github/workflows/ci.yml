@@ -57,3 +57,22 @@ jobs:
           # Attaching needs root + BPF-LSM; unprivileged status must fail cleanly,
           # not crash. Accept a non-zero exit; fail only on a panic.
           ./cau-kernel enforce status || true
+
+  kmod:
+    name: build kernel-module backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install kernel build headers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential linux-headers-generic
+      - name: Build cau_guard.ko against the generic headers
+        run: |
+          # Build against the installed generic headers (a compile check that
+          # does not depend on the runner's own running kernel).
+          KDIR="$(ls -d /usr/src/linux-headers-*-generic 2>/dev/null | sort -V | tail -1)"
+          test -n "$KDIR" || { echo "no generic kernel headers found"; exit 1; }
+          echo "Building against $KDIR"
+          make -C kmod KDIR="$KDIR"
+          test -f kmod/cau_guard.ko && echo "OK: cau_guard.ko built"
