@@ -1,0 +1,43 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: build, vet, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Vet
+        run: go vet ./...
+      - name: gofmt
+        run: |
+          out="$(gofmt -l $(find . -name '*.go'))"
+          if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
+      - name: Test (race)
+        run: go test -race ./...
+      - name: Build
+        run: go build -o cau-kernel .
+      - name: Smoke (inventory runs on the runner)
+        run: ./cau-kernel inventory >/dev/null && ./cau-kernel posture >/dev/null
+
+  bpf:
+    name: compile BPF-LSM object
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang + binutils
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang binutils
+      - name: Build and verify the BPF-LSM object
+        run: make -C bpf verify
