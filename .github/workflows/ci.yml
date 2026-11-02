@@ -58,6 +58,28 @@ jobs:
           # not crash. Accept a non-zero exit; fail only on a panic.
           ./cau-kernel enforce status || true
 
+  core-bpf:
+    name: build CO-RE BPF-LSM variant
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install clang, libbpf-dev and bpftool
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang libbpf-dev binutils
+          # bpftool: try the packaged dispatcher, then a generic build.
+          sudo apt-get install -y --no-install-recommends linux-tools-common linux-tools-generic || true
+      - name: Generate vmlinux.h and build the CO-RE object
+        run: |
+          test -r /sys/kernel/btf/vmlinux || { echo "no kernel BTF on runner"; exit 1; }
+          BPFTOOL="$(command -v bpftool || true)"
+          if [ -z "$BPFTOOL" ]; then BPFTOOL="$(ls /usr/lib/linux-tools/*/bpftool 2>/dev/null | head -1)"; fi
+          test -n "$BPFTOOL" || { echo "bpftool not found"; exit 1; }
+          echo "using bpftool: $BPFTOOL"
+          "$BPFTOOL" btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+          wc -l bpf/vmlinux.h
+          make -C bpf verify-core
+
   kmod:
     name: build kernel-module backend
     runs-on: ubuntu-latest

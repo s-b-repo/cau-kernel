@@ -15,7 +15,9 @@ CFLAGS  := -target bpf -O2 -g -D__TARGET_ARCH_$(ARCH) $(INCLUDE)
 
 OBJ := lsm_guard.bpf.o
 
-.PHONY: all verify clean
+COREOBJ := lsm_fileopen.bpf.o
+
+.PHONY: all verify core verify-core clean
 all: $(OBJ)
 
 $(OBJ): lsm_guard.bpf.c
@@ -26,5 +28,20 @@ verify: $(OBJ)
 		&& echo "OK: BPF-LSM program section present" \
 		|| { echo "FAIL: no lsm program section"; exit 1; }
 
+# The CO-RE variant needs libbpf-dev headers and a bpftool-generated vmlinux.h.
+# `make core` generates vmlinux.h (if missing) from the running kernel's BTF.
+vmlinux.h:
+	bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
+
+core: vmlinux.h $(COREOBJ)
+
+$(COREOBJ): lsm_fileopen.bpf.c vmlinux.h
+	$(CLANG) $(CFLAGS) -c $< -o $@
+
+verify-core: core
+	@readelf -S $(COREOBJ) 2>/dev/null | grep -q 'lsm/file_open' \
+		&& echo "OK: CO-RE BPF-LSM file_open section present" \
+		|| { echo "FAIL: no lsm/file_open section"; exit 1; }
+
 clean:
-	rm -f $(OBJ)
+	rm -f $(OBJ) $(COREOBJ) vmlinux.h

@@ -41,17 +41,22 @@ repo README. (A libbpf C loader — `bpf_object__open_file` → `load` →
 Because the self-contained object avoids kernel-struct access, it needs no CO-RE
 relocations and loads against the running kernel's BTF as-is.
 
-## Production variant (path-aware, CO-RE)
+## Path-aware variant (CO-RE), `lsm_fileopen.bpf.c`
 
-For per-file policy (allow/deny by inode or path, log the denied path), build
-the richer program against `libbpf-dev` and a generated header:
+`lsm_fileopen.bpf.c` adds **per-inode policy**: it hooks `lsm/file_open` and
+denies opening any file whose inode is in the `cau_blocked_inodes` map (plus the
+global `cau_enforce` freeze), reading the inode via `BPF_CORE_READ` so it is
+portable across kernels. Userspace fills the map with the inodes of files a
+verified tamper response should quarantine from access.
+
+It needs `libbpf-dev` and a bpftool-generated `vmlinux.h`:
 
 ```sh
-bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
-clang -target bpf -O2 -g -D__TARGET_ARCH_x86 \
-      -I/usr/include/$(uname -m)-linux-gnu -c lsm_fileopen.bpf.c -o lsm_fileopen.bpf.o
+make core          # generates vmlinux.h from /sys/kernel/btf/vmlinux and builds it
+make verify-core   # also checks the lsm/file_open section is present
 ```
 
-That variant reads `file->f_path` via `BPF_CORE_READ` and checks an LRU hash map
-of blocked inodes. It is documented here rather than shipped half-built; the
-self-contained guard above is the compiling, auditable baseline.
+The `core-bpf` CI job builds it on every push (installs `libbpf-dev` + bpftool,
+generates `vmlinux.h`), so it is proven to compile even though the sensor's own
+sandbox lacks those tools. The self-contained `lsm_guard` above remains the
+toolchain-free baseline; this is the richer policy on top.

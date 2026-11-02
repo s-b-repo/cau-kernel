@@ -10,3 +10,4 @@ kmod/.*.cmd
 kmod/Module.symvers
 kmod/modules.order
 kmod/.tmp_versions/
+vmlinux.h

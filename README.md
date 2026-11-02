@@ -105,6 +105,14 @@ compiles both). Still open, by honesty:
 Those need hardware/kernel environments (VMM, Secure Boot, a crash kernel) a CI
 or sandbox build cannot fully exercise; they are tracked in the engine's plan.
 
+## Documentation
+
+Full docs are in [`docs/`](docs/): [architecture](docs/architecture.md),
+[detection](docs/detection.md), [attestation](docs/attestation.md), and
+[enforcement](docs/enforcement.md). The enforcement backends have their own
+build/load notes in [`bpf/README.md`](bpf/README.md) and
+[`kmod/README.md`](kmod/README.md).
+
 ## License
 
 MIT (userspace). The BPF-LSM program is GPL-2.0, as the kernel requires for LSM
