@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/cau-edr/cau-kernel/internal/enforce"
 )
 
 func runCLI(t *testing.T, args ...string) (code int, stdout, stderr string) {
@@ -96,11 +98,21 @@ func TestCLIAttestLifecycle(t *testing.T) {
 	}
 }
 
-func TestCLIEnforceUnavailableInDefaultBuild(t *testing.T) {
-	// The default (non-ebpf) build must report enforcement unavailable, cleanly.
+func TestCLIEnforceDegradesCleanly(t *testing.T) {
+	// enforce must never crash. In the default build it reports "unavailable";
+	// in the eBPF build (no root in CI) it fails cleanly on permissions. Either
+	// way it is a non-OK exit, not a panic.
 	code, _, errOut := runCLI(t, "enforce", "status")
-	if code != exitFailed || !strings.Contains(errOut, "without eBPF enforcement") {
-		t.Errorf("enforce in default build: code=%d err=%q", code, errOut)
+	if code == exitOK {
+		t.Errorf("enforce status unexpectedly succeeded: %q", errOut)
+	}
+	if enforce.Available {
+		// eBPF build: a privilege/attach error, not the unavailable message.
+		if strings.Contains(errOut, "without eBPF enforcement") {
+			t.Errorf("eBPF build reported unavailable: %q", errOut)
+		}
+	} else if !strings.Contains(errOut, "without eBPF enforcement") {
+		t.Errorf("default build should report unavailable: %q", errOut)
 	}
 }
 
