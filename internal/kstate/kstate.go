@@ -201,7 +201,12 @@ func (c Collector) taint(warn *[]string) TaintState {
 		*warn = append(*warn, "taint state unreadable: "+err.Error())
 		return TaintState{}
 	}
-	raw, _ := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	raw, perr := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+	if perr != nil {
+		// Zero would read as a clean kernel: say the state is unknown instead.
+		*warn = append(*warn, "taint state unparseable: "+perr.Error())
+		return TaintState{}
+	}
 	var sec, other []string
 	for i, b := range taintBits {
 		if raw&(1<<uint(i)) == 0 {

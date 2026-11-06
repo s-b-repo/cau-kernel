@@ -21,5 +21,22 @@ func (g *Guard) Core() bool           { return false }
 
 func SetPinned(bool) error           { return ErrUnavailable }
 func StatusPinned() (bool, error)    { return false, ErrUnavailable }
-func BlockInode(uint64, bool) error  { return ErrUnavailable }
-func ListBlocked() ([]uint64, error) { return nil, ErrUnavailable }
+func BlockInode(BlockedFile, bool) error  { return ErrUnavailable }
+func ListBlocked() ([]BlockedFile, error) { return nil, ErrUnavailable }
+
+// NetshellGuard mirrors the eBPF build's shape so the command compiles identically.
+type NetshellGuard struct{}
+
+func LoadNetshell(NetshellConfig) (*NetshellGuard, error)          { return nil, ErrUnavailable }
+func (g *NetshellGuard) Events(context.Context, func(Event)) error { return ErrUnavailable }
+func (g *NetshellGuard) Close() error                              { return nil }
+
+// KillGuard mirrors the eBPF build's shape so the command compiles identically.
+type KillGuard struct{}
+
+func LoadKillGuard(string) (*KillGuard, error) { return nil, ErrUnavailable }
+func (g *KillGuard) Wait(context.Context)      {}
+func (g *KillGuard) Close() error              { return nil }
+
+func ProtectPID(uint32, bool) error    { return ErrUnavailable }
+func ListProtected() ([]uint32, error) { return nil, ErrUnavailable }

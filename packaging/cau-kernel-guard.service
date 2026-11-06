@@ -1,0 +1,26 @@
+# Holds the BPF-LSM network-shell guard. It audits by default: read the events,
+# then change --mode to deny once you know what on this host runs on socket stdio
+# (inetd-style services do). The guard fails open: if this service stops, the
+# policy lifts with it. Needs a binary from `make enforce`.
+
+[Unit]
+Description=CAU kernel network-shell guard
+Documentation=https://github.com/s-b-repo/cau
+DefaultDependencies=yes
+Before=cau-defend.service
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/cau-kernel enforce netshell --mode audit --any-program audit --memfd audit --log /run/cau/kernel-events.jsonl
+RuntimeDirectory=cau
+RuntimeDirectoryPreserve=yes
+StandardOutput=null
+Restart=always
+RestartSec=2
+# Needs root: loading a BPF-LSM program takes CAP_BPF, CAP_PERFMON and CAP_MAC_ADMIN.
+CapabilityBoundingSet=CAP_BPF CAP_PERFMON CAP_MAC_ADMIN CAP_SYS_ADMIN CAP_SYS_RESOURCE
+NoNewPrivileges=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

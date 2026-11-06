@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/cau-edr/cau-kernel/internal/kstate"
+	"github.com/s-b-repo/cau-kernel/internal/kstate"
 )
 
 func writeInventoryText(w io.Writer, s kstate.Snapshot) {

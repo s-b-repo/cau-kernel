@@ -1,4 +1,4 @@
-module github.com/cau-edr/cau-kernel
+module github.com/s-b-repo/cau-kernel
 
 go 1.25.0
 

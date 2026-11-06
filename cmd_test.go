@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/cau-edr/cau-kernel/internal/enforce"
+	"github.com/s-b-repo/cau-kernel/internal/enforce"
 )
 
 func runCLI(t *testing.T, args ...string) (code int, stdout, stderr string) {

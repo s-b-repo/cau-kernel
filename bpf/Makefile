@@ -16,9 +16,16 @@ CFLAGS  := -target bpf -O2 -g -D__TARGET_ARCH_$(ARCH) $(INCLUDE)
 OBJ := lsm_guard.bpf.o
 
 COREOBJ := lsm_fileopen.bpf.o
+KILLOBJ := lsm_killguard.bpf.o
+NETOBJ := lsm_netshell.bpf.o
 
 .PHONY: all verify core verify-core clean
-all: $(OBJ)
+all: $(OBJ) $(NETOBJ) $(COREOBJ)
+
+# Self-contained like lsm_guard: partial structs with preserve_access_index, so
+# it needs neither libbpf-dev nor a generated vmlinux.h.
+$(NETOBJ): lsm_netshell.bpf.c
+	$(CLANG) $(CFLAGS) -c $< -o $@
 
 $(OBJ): lsm_guard.bpf.c
 	$(CLANG) $(CFLAGS) -c $< -o $@
@@ -33,15 +40,24 @@ verify: $(OBJ)
 vmlinux.h:
 	bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
 
-core: vmlinux.h $(COREOBJ)
+core: vmlinux.h $(COREOBJ) $(KILLOBJ)
 
-$(COREOBJ): lsm_fileopen.bpf.c vmlinux.h
+$(COREOBJ): lsm_fileopen.bpf.c
+	$(CLANG) $(CFLAGS) -c $< -o $@
+
+$(KILLOBJ): lsm_killguard.bpf.c vmlinux.h
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
 verify-core: core
 	@readelf -S $(COREOBJ) 2>/dev/null | grep -q 'lsm/file_open' \
 		&& echo "OK: CO-RE BPF-LSM file_open section present" \
 		|| { echo "FAIL: no lsm/file_open section"; exit 1; }
+	@readelf -S $(KILLOBJ) 2>/dev/null | grep -q 'lsm/task_kill' \
+		&& echo "OK: CO-RE BPF-LSM task_kill section present" \
+		|| { echo "FAIL: no lsm/task_kill section"; exit 1; }
+	@readelf -S $(KILLOBJ) 2>/dev/null | grep -q 'lsm/ptrace_access_check' \
+		&& echo "OK: CO-RE BPF-LSM ptrace_access_check section present" \
+		|| { echo "FAIL: no lsm/ptrace_access_check section"; exit 1; }
 
 clean:
-	rm -f $(OBJ) $(COREOBJ) vmlinux.h
+	rm -f $(OBJ) $(NETOBJ) $(COREOBJ) $(KILLOBJ) vmlinux.h

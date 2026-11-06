@@ -20,8 +20,8 @@ import (
 	"io"
 	"os"
 
-	"github.com/cau-edr/cau-kernel/internal/ksign"
-	"github.com/cau-edr/cau-kernel/internal/kstate"
+	"github.com/s-b-repo/cau-kernel/internal/ksign"
+	"github.com/s-b-repo/cau-kernel/internal/kstate"
 )
 
 var version = "0.1.0-dev"

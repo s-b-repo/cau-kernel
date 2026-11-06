@@ -41,22 +41,49 @@ repo README. (A libbpf C loader — `bpf_object__open_file` → `load` →
 Because the self-contained object avoids kernel-struct access, it needs no CO-RE
 relocations and loads against the running kernel's BTF as-is.
 
-## Path-aware variant (CO-RE), `lsm_fileopen.bpf.c`
+## Path-aware variant, `lsm_fileopen.bpf.c`
 
-`lsm_fileopen.bpf.c` adds **per-inode policy**: it hooks `lsm/file_open` and
-denies opening any file whose inode is in the `cau_blocked_inodes` map (plus the
-global `cau_enforce` freeze), reading the inode via `BPF_CORE_READ` so it is
-portable across kernels. Userspace fills the map with the inodes of files a
-verified tamper response should quarantine from access.
-
-It needs `libbpf-dev` and a bpftool-generated `vmlinux.h`:
+`lsm_fileopen.bpf.c` adds **per-file policy**: it hooks `lsm/file_open` and denies
+opening any file in the `cau_blocked_inodes` map (plus the global `cau_enforce`
+freeze). The key is device and inode, since inode numbers repeat across
+filesystems. Fields are read through CO-RE, so it is portable across kernels, and
+like `lsm_netshell.bpf.c` it declares partial structs with `preserve_access_index`
+rather than needing `libbpf-dev` or a generated `vmlinux.h`.
 
 ```sh
-make core          # generates vmlinux.h from /sys/kernel/btf/vmlinux and builds it
-make verify-core   # also checks the lsm/file_open section is present
+make lsm_fileopen.bpf.o lsm_netshell.bpf.o
 ```
 
-The `core-bpf` CI job builds it on every push (installs `libbpf-dev` + bpftool,
-generates `vmlinux.h`), so it is proven to compile even though the sensor's own
-sandbox lacks those tools. The self-contained `lsm_guard` above remains the
-toolchain-free baseline; this is the richer policy on top.
+`lsm_killguard.bpf.c` still needs `libbpf-dev` and a bpftool-generated `vmlinux.h`
+(`make core`).
+
+`make vm-test` from the repository root proves both on the running kernel, in
+QEMU, through the real verifier. The self-contained `lsm_guard` above remains the
+global-freeze baseline; this is the richer policy on top.
+
+## Sensor self-protection (CO-RE), `lsm_killguard.bpf.c`
+
+`lsm_killguard.bpf.c` protects the sensor itself rather than the host. It hooks
+`lsm/task_kill` to deny any signal — `SIGKILL` and `SIGSTOP` included, which no
+user-space program can resist — sent to a process in the `cau_protected_pids`
+map, and `lsm/ptrace_access_check` to deny debugger/injector attach to one. It
+reads the target's `tgid` via CO-RE and needs `libbpf-dev` + a generated
+`vmlinux.h`:
+
+```sh
+make core          # builds lsm_killguard.bpf.o
+make verify-core   # also checks the task_kill + ptrace_access_check sections
+```
+
+Drive it with `cau-kernel enforce killguard|protect|unprotect|protected` (see
+[`docs/enforcement.md`](../docs/enforcement.md)). It is the kernel-level
+counterpart to the scanner's userspace process-name randomisation: the latter
+hides the sensor from `pkill <name>`, this makes a *found* PID unkillable while
+the guard is resident.
+
+**Fail-open and honest about its limits:** the hooks die with the resident
+enforcer (so protection can never brick the host, and `protect` refuses PID 1
+and the enforcer's own PID); `security_task_kill` covers user-space signals, not
+every kernel-internal path (e.g. the OOM killer); and, as with every program
+here, a BPF-LSM load is only verifiable on a real `CONFIG_BPF_LSM` kernel — CI
+proves compilation, never load.

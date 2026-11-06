@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/cau-edr/cau-kernel/internal/ksign"
-	"github.com/cau-edr/cau-kernel/internal/kstate"
+	"github.com/s-b-repo/cau-kernel/internal/ksign"
+	"github.com/s-b-repo/cau-kernel/internal/kstate"
 )
 
 // cmdAttest records and verifies boot-anchored measurement: TPM PCRs, the IMA

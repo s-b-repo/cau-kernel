@@ -13,8 +13,9 @@ GO      ?= go
 CLANG   ?= clang
 BINARY  ?= cau-kernel
 EBPF_OBJ := internal/enforce/lsm_guard.bpf.o
+NET_OBJ  := internal/enforce/lsm_netshell.bpf.o
 
-.PHONY: build test vet fmt-check bpf-object enforce fuzz clean
+.PHONY: build test vet fmt-check bpf-object enforce fuzz clean vm-test
 
 FUZZTIME ?= 20s
 # Coverage-guided fuzzing of the untrusted-input parsers. Seed corpora also run
@@ -37,8 +38,14 @@ fmt-check:
 	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 
 bpf-object:
-	$(MAKE) -C bpf lsm_guard.bpf.o
+	$(MAKE) -C bpf lsm_guard.bpf.o lsm_netshell.bpf.o lsm_fileopen.bpf.o
 	cp bpf/lsm_guard.bpf.o $(EBPF_OBJ)
+	cp bpf/lsm_netshell.bpf.o $(NET_OBJ)
+
+# Boot the running kernel in QEMU and exercise the guards end to end: the real
+# verifier, real execve, no root on the host. See scripts/vm-test.sh.
+vm-test: bpf-object
+	scripts/vm-test.sh
 
 # Build with eBPF enforcement compiled in. Requires the object to be present
 # (bpf-object) and network access to fetch cilium/ebpf on first build.
@@ -46,5 +53,5 @@ enforce: bpf-object
 	$(GO) build -tags ebpf -o $(BINARY) .
 
 clean:
-	rm -f $(BINARY) $(EBPF_OBJ)
+	rm -f $(BINARY) $(EBPF_OBJ) $(NET_OBJ)
 	$(MAKE) -C bpf clean

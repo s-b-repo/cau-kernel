@@ -62,7 +62,10 @@ static int ret_handler(struct kretprobe_instance *ri, struct pt_regs *regs)
 
 static struct kretprobe guard_probe = {
 	.handler        = ret_handler,
-	.maxactive      = 64,
+	// Each exec in flight holds an instance, and the exec check can sleep (IMA,
+	// FUSE), so concurrency is not bounded by CPU count. A probe with no instance
+	// free is missed, and a missed probe is an exec the freeze let through.
+	.maxactive      = 1024,
 };
 
 static int __init cau_guard_init(void)

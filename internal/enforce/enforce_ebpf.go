@@ -154,9 +154,9 @@ func (g *Guard) Close() error {
 // has a per-inode blocklist).
 func (g *Guard) Core() bool { return g.core }
 
-// BlockInode adds (block=true) or removes (block=false) an inode from the pinned
-// per-inode blocklist. Requires a CO-RE enforcer to be running (that map pinned).
-func BlockInode(ino uint64, block bool) error {
+// BlockInode adds (block=true) or removes (block=false) a file from the pinned
+// blocklist. Requires a CO-RE enforcer to be running (that map pinned).
+func BlockInode(key BlockedFile, block bool) error {
 	m, err := ebpf.LoadPinnedMap(inodeMapPinPath(), nil)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -167,16 +167,16 @@ func BlockInode(ino uint64, block bool) error {
 	defer m.Close()
 	if block {
 		var v uint8 = 1
-		return m.Update(&ino, &v, ebpf.UpdateAny)
+		return m.Update(&key, &v, ebpf.UpdateAny)
 	}
-	if err := m.Delete(&ino); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
+	if err := m.Delete(&key); err != nil && !errors.Is(err, ebpf.ErrKeyNotExist) {
 		return fmt.Errorf("enforce: unblock inode: %w", err)
 	}
 	return nil
 }
 
-// ListBlocked returns the inodes currently in the pinned blocklist.
-func ListBlocked() ([]uint64, error) {
+// ListBlocked returns the files currently in the pinned blocklist.
+func ListBlocked() ([]BlockedFile, error) {
 	m, err := ebpf.LoadPinnedMap(inodeMapPinPath(), nil)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -185,8 +185,8 @@ func ListBlocked() ([]uint64, error) {
 		return nil, fmt.Errorf("enforce: open inode blocklist: %w", err)
 	}
 	defer m.Close()
-	var out []uint64
-	var key uint64
+	var out []BlockedFile
+	var key BlockedFile
 	var val uint8
 	it := m.Iterate()
 	for it.Next(&key, &val) {
