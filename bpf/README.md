@@ -54,8 +54,7 @@ rather than needing `libbpf-dev` or a generated `vmlinux.h`.
 make lsm_fileopen.bpf.o lsm_netshell.bpf.o
 ```
 
-`lsm_killguard.bpf.c` still needs `libbpf-dev` and a bpftool-generated `vmlinux.h`
-(`make core`).
+Every object here builds with clang and the kernel UAPI headers alone.
 
 `make vm-test` from the repository root proves both on the running kernel, in
 QEMU, through the real verifier. The self-contained `lsm_guard` above remains the
@@ -67,11 +66,11 @@ global-freeze baseline; this is the richer policy on top.
 `lsm/task_kill` to deny any signal — `SIGKILL` and `SIGSTOP` included, which no
 user-space program can resist — sent to a process in the `cau_protected_pids`
 map, and `lsm/ptrace_access_check` to deny debugger/injector attach to one. It
-reads the target's `tgid` via CO-RE and needs `libbpf-dev` + a generated
-`vmlinux.h`:
+reads the target's `tgid` via CO-RE, and like the others needs neither
+`libbpf-dev` nor a generated `vmlinux.h`:
 
 ```sh
-make core          # builds lsm_killguard.bpf.o
+make lsm_killguard.bpf.o
 make verify-core   # also checks the task_kill + ptrace_access_check sections
 ```
 

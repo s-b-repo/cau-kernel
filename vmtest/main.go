@@ -239,6 +239,7 @@ func scenarios() {
 
 	eventLog(sock)
 	blocklist()
+	killGuard()
 
 	g, err := enforce.Load("")
 	if err != nil {
@@ -300,6 +301,20 @@ func blocklist() {
 	check("blocklist: listed", err == nil && len(listed) >= 1, fmt.Sprintf("%+v %v", listed, err))
 	_ = enforce.BlockInode(key, false)
 	check("blocklist: unblocked file runs", run("/mnt/a/implant", nil, nil) == nil, "")
+
+	// A freeze stops execution. If it also stopped every open, nothing could run
+	// `enforce off`, read a log or write one: the operator would be locked out.
+	if err := enforce.SetPinned(true); err != nil {
+		check("file guard freeze: set", false, err.Error())
+		return
+	}
+	check("file guard freeze: exec is refused", denied(run("/bin/plain", nil, nil)), "")
+	data, readErr := os.ReadFile("/bin/plain")
+	check("file guard freeze: files stay readable", readErr == nil && len(data) > 0, fmt.Sprint(readErr))
+	writeErr := os.WriteFile("/tmp/freeze-log", []byte("x"), 0o644)
+	check("file guard freeze: files stay writable", writeErr == nil, fmt.Sprint(writeErr))
+	check("file guard freeze: the operator can release it", enforce.SetPinned(false) == nil, "")
+	check("file guard freeze: released", run("/bin/plain", nil, nil) == nil, "")
 }
 
 // eventLog runs the real command with a real policy. Its log is the contract with
@@ -352,6 +367,73 @@ func cliBlock() {
 	check("cli block: the running implant's file no longer executes", denied(run(impl, nil, nil)), "")
 	_ = os.Link(impl, impl+".again")
 	check("cli block: another name for that file is refused too", denied(run(impl+".again", nil, nil)), "")
+}
+
+// sleeper starts a process that stays up to be signalled.
+func sleeper(t string) *exec.Cmd {
+	body, _ := os.ReadFile("/bin/plain")
+	p := "/tmp/" + t + "/sleeper"
+	_ = os.MkdirAll(filepath.Dir(p), 0o755)
+	_ = os.WriteFile(p, body, 0o755)
+	c := exec.Command(p)
+	if err := c.Start(); err != nil {
+		check("kill guard: start "+t, false, err.Error())
+		return nil
+	}
+	return c
+}
+
+func alive(c *exec.Cmd) bool {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", c.Process.Pid))
+	if err != nil {
+		return false
+	}
+	return !strings.Contains(string(b), ") Z ")
+}
+
+// killGuard proves the sensor can be protected from a root attacker, that nothing
+// else is, and that the protection cannot outlive the guard: an operator must
+// always be able to take it away.
+func killGuard() {
+	g, err := enforce.LoadKillGuard("/lsm_killguard.bpf.o")
+	if err != nil {
+		check("kill guard: load through the verifier", false, err.Error())
+		return
+	}
+	check("kill guard: load through the verifier", true, "")
+	shielded, plain := sleeper("a"), sleeper("b")
+	if shielded == nil || plain == nil {
+		_ = g.Close()
+		return
+	}
+	defer func() { _ = shielded.Process.Kill(); _ = shielded.Wait() }()
+	defer func() { _ = plain.Process.Kill(); _ = plain.Wait() }()
+	pid := shielded.Process.Pid
+	if err := enforce.ProtectPID(uint32(pid), true); err != nil {
+		check("kill guard: protect", false, err.Error())
+		_ = g.Close()
+		return
+	}
+	check("kill guard: root SIGKILL is refused", syscall.Kill(pid, syscall.SIGKILL) == syscall.EPERM, "")
+	check("kill guard: root SIGTERM is refused", syscall.Kill(pid, syscall.SIGTERM) == syscall.EPERM, "")
+	check("kill guard: root SIGSTOP is refused", syscall.Kill(pid, syscall.SIGSTOP) == syscall.EPERM, "")
+	check("kill guard: ptrace attach is refused", unix.PtraceAttach(pid) == syscall.EPERM, "")
+	time.Sleep(50 * time.Millisecond)
+	check("kill guard: the protected process survived", alive(shielded), "")
+	listed, err := enforce.ListProtected()
+	check("kill guard: protected pid is listed", err == nil && len(listed) == 1 && int(listed[0]) == pid, fmt.Sprintf("%v %v", listed, err))
+
+	self := os.Getpid()
+	_ = enforce.ProtectPID(uint32(self), true)
+	check("kill guard: a protected process may signal itself", syscall.Kill(self, 0) == nil, "")
+	_ = enforce.ProtectPID(uint32(self), false)
+
+	check("kill guard: an unprotected process still dies", syscall.Kill(plain.Process.Pid, syscall.SIGKILL) == nil, "")
+	_ = enforce.ProtectPID(uint32(pid), false)
+	check("kill guard: unprotect restores signals", syscall.Kill(pid, 0) == nil, "")
+	_ = enforce.ProtectPID(uint32(pid), true)
+	_ = g.Close()
+	check("kill guard: fail-open, detaching lifts protection", syscall.Kill(pid, syscall.SIGKILL) == nil, "")
 }
 
 func powerOff() {

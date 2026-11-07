@@ -29,19 +29,25 @@
 //     kernel-internal signals (e.g. the OOM killer) do not pass through it, so
 //     this hardens against attackers, not against the kernel itself.
 //
-// Like lsm_fileopen.bpf.c this needs libbpf-dev headers and a bpftool-generated
-// vmlinux.h (CO-RE); see README.md and the `core-bpf` CI job. A BPF-LSM load
-// can only be verified on a real kernel with CONFIG_BPF_LSM and `bpf` in
-// /sys/kernel/security/lsm.
+// Self-contained like lsm_fileopen.bpf.c: clang plus UAPI headers. The partial
+// struct carries preserve_access_index, so tgid is a CO-RE relocation. `make
+// vm-test` proves it on a real kernel, through the real verifier.
 
-#include "vmlinux.h"
-#include <bpf/bpf_helpers.h>
-#include <bpf/bpf_core_read.h>
-#include <bpf/bpf_tracing.h>
+#include <linux/bpf.h>
 
-#ifndef EPERM
+#define SEC(name) __attribute__((section(name), used))
+#define __uint(name, val) int(*name)[val]
+#define __type(name, val) typeof(val) *name
+#define __core __attribute__((preserve_access_index))
+#undef __always_inline
+#define __always_inline inline __attribute__((always_inline))
 #define EPERM 1
-#endif
+
+static void *(*bpf_map_lookup_elem)(void *map, const void *key) = (void *)1;
+static __u64 (*bpf_get_current_pid_tgid)(void) = (void *)14;
+static long (*bpf_probe_read_kernel)(void *dst, __u32 size, const void *src) = (void *)113;
+
+struct task_struct { int tgid; } __core;
 
 char LICENSE[] SEC("license") = "GPL";
 
@@ -54,10 +60,18 @@ struct {
 	__type(value, __u8);
 } cau_protected_pids SEC(".maps");
 
-static __always_inline int protected(struct task_struct *t)
+static __always_inline __u32 tgid_of(struct task_struct *t)
 {
-	__u32 tgid = BPF_CORE_READ(t, tgid);
+	int tgid = 0;
+
+	bpf_probe_read_kernel(&tgid, sizeof(tgid), __builtin_preserve_access_index(&t->tgid));
+	return (__u32)tgid;
+}
+
+static __always_inline int protected(__u32 tgid)
+{
 	__u8 *v = bpf_map_lookup_elem(&cau_protected_pids, &tgid);
+
 	return v && *v;
 }
 
@@ -65,25 +79,29 @@ static __always_inline int protected(struct task_struct *t)
 // deny. We exempt signals the protected process sends within its own thread
 // group, so the sensor can still manage its own workers and signal itself.
 SEC("lsm/task_kill")
-int BPF_PROG(cau_task_kill, struct task_struct *p, struct kernel_siginfo *info, int sig, const struct cred *cred)
+int cau_task_kill(unsigned long long *ctx)
 {
-	__u32 target_tgid = BPF_CORE_READ(p, tgid);
-	__u32 sender_tgid = (__u32)(bpf_get_current_pid_tgid() >> 32);
-	if (sender_tgid == target_tgid)
+	struct task_struct *p = (void *)ctx[0];
+	int prior = (int)ctx[4];
+	__u32 target = tgid_of(p);
+
+	if (prior)
+		return prior;
+	if ((__u32)(bpf_get_current_pid_tgid() >> 32) == target)
 		return 0; // intra-process signalling stays allowed
-	__u8 *v = bpf_map_lookup_elem(&cau_protected_pids, &target_tgid);
-	if (v && *v)
-		return -EPERM;
-	return 0;
+	return protected(target) ? -EPERM : 0;
 }
 
 // lsm/ptrace_access_check fires when a tracer tries to attach to `child`.
 // Deny if the target is protected — blocks gdb, injectors, /proc/<pid>/mem
 // writes via ptrace, and similar hooking of the sensor.
 SEC("lsm/ptrace_access_check")
-int BPF_PROG(cau_ptrace, struct task_struct *child, unsigned int mode)
+int cau_ptrace(unsigned long long *ctx)
 {
-	if (protected(child))
-		return -EPERM;
-	return 0;
+	struct task_struct *child = (void *)ctx[0];
+	int prior = (int)ctx[2];
+
+	if (prior)
+		return prior;
+	return protected(tgid_of(child)) ? -EPERM : 0;
 }

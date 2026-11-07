@@ -38,7 +38,7 @@ fmt-check:
 	if [ -n "$$out" ]; then echo "gofmt needed:"; echo "$$out"; exit 1; fi
 
 bpf-object:
-	$(MAKE) -C bpf lsm_guard.bpf.o lsm_netshell.bpf.o lsm_fileopen.bpf.o
+	$(MAKE) -C bpf lsm_guard.bpf.o lsm_netshell.bpf.o lsm_fileopen.bpf.o lsm_killguard.bpf.o
 	cp bpf/lsm_guard.bpf.o $(EBPF_OBJ)
 	cp bpf/lsm_netshell.bpf.o $(NET_OBJ)
 

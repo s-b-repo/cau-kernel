@@ -34,7 +34,13 @@ struct inode {
 	unsigned long i_ino;
 	struct super_block *i_sb;
 } __core;
-struct file { struct inode *f_inode; } __core;
+struct file {
+	struct inode *f_inode;
+	unsigned int f_flags;
+} __core;
+
+// __FMODE_EXEC: the open that loads a program. See do_open_execat().
+#define FMODE_EXEC_FLAG 0x20
 
 // Global freeze flag (same meaning as lsm_guard's cau_enforce).
 struct {
@@ -59,7 +65,9 @@ struct {
 } cau_blocked_inodes SEC(".maps");
 
 // lsm/file_open fires when a file is opened; returning a negative errno denies
-// the open. We respect the global freeze first, then the blocklist.
+// the open. The freeze applies only to opens that load a program: it is an
+// execution freeze, and refusing every open would stop the operator running
+// `enforce off`, or anything else, for as long as it held.
 SEC("lsm/file_open")
 int cau_file_open(unsigned long long *ctx)
 {
@@ -68,6 +76,7 @@ int cau_file_open(unsigned long long *ctx)
 	struct inode *inode = 0;
 	struct super_block *sb = 0;
 	struct inode_key key = {};
+	unsigned int flags = 0;
 	__u32 zero = 0;
 	__u32 *enforce;
 	__u8 *blocked;
@@ -76,7 +85,8 @@ int cau_file_open(unsigned long long *ctx)
 		return prior;
 
 	enforce = bpf_map_lookup_elem(&cau_enforce, &zero);
-	if (enforce && *enforce)
+	RD(flags, file->f_flags);
+	if (enforce && *enforce && (flags & FMODE_EXEC_FLAG))
 		return -EPERM;
 
 	RD(inode, file->f_inode);

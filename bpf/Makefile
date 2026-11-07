@@ -20,7 +20,7 @@ KILLOBJ := lsm_killguard.bpf.o
 NETOBJ := lsm_netshell.bpf.o
 
 .PHONY: all verify core verify-core clean
-all: $(OBJ) $(NETOBJ) $(COREOBJ)
+all: $(OBJ) $(NETOBJ) $(COREOBJ) $(KILLOBJ)
 
 # Self-contained like lsm_guard: partial structs with preserve_access_index, so
 # it needs neither libbpf-dev nor a generated vmlinux.h.
@@ -40,12 +40,12 @@ verify: $(OBJ)
 vmlinux.h:
 	bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
 
-core: vmlinux.h $(COREOBJ) $(KILLOBJ)
+core: $(COREOBJ) $(KILLOBJ)
 
 $(COREOBJ): lsm_fileopen.bpf.c
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
-$(KILLOBJ): lsm_killguard.bpf.c vmlinux.h
+$(KILLOBJ): lsm_killguard.bpf.c
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
 verify-core: core

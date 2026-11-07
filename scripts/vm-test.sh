@@ -28,6 +28,7 @@ image="$work/image"
 mkdir -p "$image"/{bin,tmp,proc,sys,dev}
 cp "$work/init.bin" "$image/init"
 cp bpf/lsm_fileopen.bpf.o "$image/lsm_fileopen.bpf.o"
+cp bpf/lsm_killguard.bpf.o "$image/lsm_killguard.bpf.o"
 cp "$work/cau-kernel" "$image/bin/cau-kernel"
 cp "$work/init.bin" "$image/bin/sh"
 cp "$work/init.bin" "$image/bin/plain"
@@ -43,7 +44,7 @@ if [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
 fi
 
 out="$work/serial.log"
-timeout "${VM_TIMEOUT:-300}" qemu-system-x86_64 "${accel[@]}" -m 1024 -smp 2 \
+timeout "${VM_TIMEOUT:-300}" qemu-system-x86_64 "${accel[@]}" -m "${VM_MEM:-768}" -smp 2 \
 	-kernel "$kernel" -initrd "$work/initrd.gz" \
 	-append "console=ttyS0 panic=-1 quiet loglevel=3" \
 	-nographic -no-reboot -nic none | tee "$out" | grep --line-buffered VMTEST || true

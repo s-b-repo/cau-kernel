@@ -6,6 +6,10 @@ tripped the tamper detectors cannot spawn further processes while the operator
 responds. Both are **fail-open**: if the resident enforcer dies, the attachment
 drops and execution resumes, so a bug can never permanently brick the host.
 
+A freeze refuses only opens that load a program. Before 2026-11-07, with the file
+guard loaded it refused every open, so nothing could read a log, write one, or run
+`enforce off`; `make vm-test` now checks that files stay usable under a freeze.
+
 ## Network-shell guard
 
 `cau ps` finds a reverse shell by polling `/proc`, so anything that runs between
@@ -51,7 +55,7 @@ and `cau defend --kernel-events` joins its log with the other layers.
 ## Proving a guard
 
 `make vm-test` boots the running kernel in QEMU with a one-program initramfs and
-exercises the guards end to end, 38 scenarios on 7.1.5: the real verifier loads
+exercises the guards end to end, 54 scenarios on 7.1.5, the kill guard included: the real verifier loads
 them, real `execve` calls run through the hooks, and the real `cau-kernel` binary
 blocks a running process's file through `/proc/<pid>/exe`. It needs no root on the host, because the guest owns
 its whole kernel. `KERNEL=/path/to/bzImage make vm-test` tests another kernel.
