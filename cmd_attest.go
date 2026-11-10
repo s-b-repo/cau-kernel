@@ -142,6 +142,8 @@ func attestVerify(args []string, stdout, stderr io.Writer) int {
 	}
 	if pub != nil {
 		fmt.Fprintln(stdout, "[*] baseline signature verified")
+	} else if env.Signature != "" {
+		fmt.Fprintln(stderr, "[WARN] baseline is signed but no --pubkey given; signature not checked")
 	}
 	cur := kstate.Collector{Root: *root}.Measured()
 	changes := kstate.DiffMeasured(base, cur)

@@ -31,6 +31,17 @@ import (
 // Available reports whether this build has eBPF enforcement compiled in.
 const Available = true
 
+// lsm_guard.bpf.o is a BUILD ARTIFACT, not a checked-in source. The root
+// Makefile's `bpf-object` target compiles it (clang -target bpf, from bpf/) and
+// copies it into this package, and *.bpf.o is deliberately .gitignore'd. An
+// `ebpf`-tagged build on a fresh clone therefore fails with
+//
+//	pattern lsm_guard.bpf.o: no matching files found
+//
+// so run `make bpf-object` (or `make enforce`, which depends on it) first.
+
+//go:generate make -C ../.. bpf-object
+
 //go:embed lsm_guard.bpf.o
 var guardObject []byte
 
@@ -47,11 +58,37 @@ func mapPinPath() string      { return filepath.Join(pinDir, mapName) }
 func inodeMapPinPath() string { return filepath.Join(pinDir, inodeMapName) }
 
 // Guard is a loaded-and-attached resident guard. Hold it for the lifetime of
-// the enforcer; Close detaches the program and removes the pinned maps.
+// the enforcer; Close detaches the program and removes the pinned maps this
+// Load pinned (created), so a control-only or refused-to-start path never
+// unlinks a pin another resident owns.
 type Guard struct {
-	coll *ebpf.Collection
-	lnk  link.Link
-	core bool
+	coll    *ebpf.Collection
+	lnk     link.Link
+	core    bool
+	created bool
+}
+
+// pinTaken reports whether a failed Pin means the bpffs entry already exists —
+// the kernel returns EEXIST rather than letting a second process replace the
+// pinned object, so the pin belongs to a process that is still running.
+func pinTaken(err error) bool { return errors.Is(err, os.ErrExist) }
+
+// residentBusyError is what a second resident attempt sees. Only one resident
+// may own a pinned control channel: stealing it would let that resident's Close
+// unlink the pin the running resident's `enforce on|off/status` depends on.
+func residentBusyError(what, channel, path string) error {
+	return fmt.Errorf("enforce: another %s is already resident (%s %s is pinned); refusing to steal its control channel", what, channel, path)
+}
+
+// removeCreatedPins unlinks only pins this process created; it never touches a
+// pin owned by another resident.
+func removeCreatedPins(control, inode bool) {
+	if control {
+		_ = os.Remove(mapPinPath())
+	}
+	if inode {
+		_ = os.Remove(inodeMapPinPath())
+	}
 }
 
 // Load attaches an execution-freeze guard and pins its control map to bpffs so
@@ -92,47 +129,59 @@ func Load(corePath string) (*Guard, error) {
 		coll.Close()
 		return nil, err
 	}
-	_ = os.Remove(mapPinPath())
+	// Pin without pre-emptive unlink: a successful Pin means this resident owns
+	// the control channel, an EEXIST means another one already does.
+	var pinnedCtl, pinnedInode bool
 	if err := m.Pin(mapPinPath()); err != nil {
 		coll.Close()
+		if pinTaken(err) {
+			return nil, residentBusyError("enforcer", "control map", mapPinPath())
+		}
 		return nil, fmt.Errorf("enforce: pin control map: %w", err)
 	}
+	pinnedCtl = true
 	if core {
 		im, ok := coll.Maps[inodeMapName]
 		if !ok {
-			_ = os.Remove(mapPinPath())
+			removeCreatedPins(pinnedCtl, pinnedInode)
 			coll.Close()
 			return nil, fmt.Errorf("enforce: inode map %q not found in CO-RE object", inodeMapName)
 		}
-		_ = os.Remove(inodeMapPinPath())
 		if err := im.Pin(inodeMapPinPath()); err != nil {
-			_ = os.Remove(mapPinPath())
+			removeCreatedPins(pinnedCtl, pinnedInode)
 			coll.Close()
+			if pinTaken(err) {
+				return nil, residentBusyError("enforcer", "inode map", inodeMapPinPath())
+			}
 			return nil, fmt.Errorf("enforce: pin inode map: %w", err)
 		}
+		pinnedInode = true
 	}
 	p, ok := coll.Programs[prog]
 	if !ok {
-		_ = os.Remove(mapPinPath())
-		_ = os.Remove(inodeMapPinPath())
+		removeCreatedPins(pinnedCtl, pinnedInode)
 		coll.Close()
 		return nil, fmt.Errorf("enforce: program %q not found", prog)
 	}
 	l, err := link.AttachLSM(link.LSMOptions{Program: p})
 	if err != nil {
-		_ = os.Remove(mapPinPath())
-		_ = os.Remove(inodeMapPinPath())
+		removeCreatedPins(pinnedCtl, pinnedInode)
 		coll.Close()
 		return nil, fmt.Errorf("enforce: attach LSM (need CONFIG_BPF_LSM and `bpf` in /sys/kernel/security/lsm): %w", err)
 	}
-	return &Guard{coll: coll, lnk: l, core: core}, nil
+	return &Guard{coll: coll, lnk: l, core: core, created: true}, nil
 }
 
 // Wait blocks until ctx is done (the resident enforcer loop).
 func (g *Guard) Wait(ctx context.Context) { <-ctx.Done() }
 
 // Close detaches the program and removes the pinned map — execution is no
-// longer frozen once this returns.
+// longer frozen once this returns. The link fd is closed first: enforcement
+// lives only as long as that fd, so the policy is lifted before the pins go.
+// Only pins this Load created are unlinked — the control path
+// (SetPinned/StatusPinned via openPinned) opens a pinned map and closes it
+// again, which closes the fd but keeps the bpffs entry, so it never unlinks
+// the resident's control channel.
 func (g *Guard) Close() error {
 	var first error
 	if g.lnk != nil {
@@ -140,9 +189,9 @@ func (g *Guard) Close() error {
 			first = err
 		}
 	}
-	_ = os.Remove(mapPinPath())
-	if g.core {
-		_ = os.Remove(inodeMapPinPath())
+	if g.created {
+		removeCreatedPins(true, g.core)
+		g.created = false
 	}
 	if g.coll != nil {
 		g.coll.Close()

@@ -14,6 +14,17 @@ import (
 	"github.com/cilium/ebpf/ringbuf"
 )
 
+// lsm_netshell.bpf.o is a BUILD ARTIFACT, not a checked-in source. The root
+// Makefile's `bpf-object` target compiles it (clang -target bpf, from bpf/) and
+// copies it into this package, and *.bpf.o is deliberately .gitignore'd. An
+// `ebpf`-tagged build on a fresh clone therefore fails with
+//
+//	pattern lsm_netshell.bpf.o: no matching files found
+//
+// so run `make bpf-object` (or `make enforce`, which depends on it) first.
+
+//go:generate make -C ../.. bpf-object
+
 //go:embed lsm_netshell.bpf.o
 var netshellObject []byte
 
@@ -57,11 +68,21 @@ func LoadNetshell(cfg NetshellConfig) (*NetshellGuard, error) {
 		g.Close()
 		return nil, err
 	}
-	if g.events, err = ringbuf.NewReader(coll.Maps[netshellEventMap]); err != nil {
+	em, ok := coll.Maps[netshellEventMap]
+	if !ok {
+		g.Close()
+		return nil, fmt.Errorf("enforce: event map %q not found", netshellEventMap)
+	}
+	if g.events, err = ringbuf.NewReader(em); err != nil {
 		g.Close()
 		return nil, fmt.Errorf("enforce: open event ring: %w", err)
 	}
-	if g.lnk, err = link.AttachLSM(link.LSMOptions{Program: coll.Programs[netshellProg]}); err != nil {
+	p, ok := coll.Programs[netshellProg]
+	if !ok {
+		g.Close()
+		return nil, fmt.Errorf("enforce: program %q not found", netshellProg)
+	}
+	if g.lnk, err = link.AttachLSM(link.LSMOptions{Program: p}); err != nil {
 		g.Close()
 		return nil, fmt.Errorf("enforce: attach LSM (need CONFIG_BPF_LSM and `bpf` in /sys/kernel/security/lsm): %w", err)
 	}
@@ -69,7 +90,10 @@ func LoadNetshell(cfg NetshellConfig) (*NetshellGuard, error) {
 }
 
 func (g *NetshellGuard) configure(cfg NetshellConfig) error {
-	names := g.coll.Maps[netshellNames]
+	names, ok := g.coll.Maps[netshellNames]
+	if !ok {
+		return fmt.Errorf("enforce: interpreter map %q not found", netshellNames)
+	}
 	var one uint8 = 1
 	for _, n := range Interpreters() {
 		var key [16]byte
@@ -78,7 +102,10 @@ func (g *NetshellGuard) configure(cfg NetshellConfig) error {
 			return fmt.Errorf("enforce: load interpreter names: %w", err)
 		}
 	}
-	policy := g.coll.Maps[netshellPolicy]
+	policy, ok := g.coll.Maps[netshellPolicy]
+	if !ok {
+		return fmt.Errorf("enforce: policy map %q not found", netshellPolicy)
+	}
 	for key, mode := range map[uint32]Mode{policyNetshell: cfg.Interpreters, policyMemfd: cfg.Memfd, policyAny: cfg.AnyProgram} {
 		v := uint32(mode)
 		if err := policy.Update(&key, &v, ebpf.UpdateAny); err != nil {

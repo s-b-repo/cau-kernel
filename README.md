@@ -18,6 +18,8 @@ It has two halves:
   primitive; pick per host:
   - [`bpf/`](bpf/README.md) + `cau-kernel enforce` — a **BPF-LSM** program with a
     cilium/ebpf loader. The safer default; `ebpf` build tag (`make enforce`).
+    Ships a path-aware CO-RE per-inode blocklist (`enforce run --core`), opt-in
+    — see the *Honest scope* section below.
   - [`kmod/`](kmod/README.md) — a **loadable kernel module** (kretprobe
     mediation). *More capable than eBPF* (arbitrary in-kernel C, no verifier,
     hooks eBPF can't reach) for where BPF-LSM cannot serve — at the cost of
@@ -93,19 +95,28 @@ rewrites the baseline cannot forge its signature.
 
 Shipped and building: the detection sensor, boot attestation (TPM/IMA/kdump
 drift), the BPF-LSM enforcement guard **and** the kernel-module backend (CI
-compiles both). Still open, by honesty:
+compiles both), and the path-aware CO-RE per-inode blocklist object. Still
+open, by honesty:
 
-- **Rich per-inode/path BPF-LSM policy** — the CO-RE variant (needs libbpf-dev +
-  a generated `vmlinux.h`); the recipe is in [`bpf/README.md`](bpf/README.md). The
-  shipped guard is a global execution-freeze, not per-file policy yet.
+- **Per-inode policy is opt-in and privileged, not a turnkey feature.** The
+  shipped guard *by default* is the global execution-freeze (`enforce run`). The
+  path-aware variant — `bpf/lsm_fileopen.bpf.c`, loaded with
+  `enforce run --core <obj>` — adds `enforce block|unblock|blocked` on top,
+  denying individual files by device+inode through `lsm/file_open`; see
+  [`docs/enforcement.md`](docs/enforcement.md). It compiles with plain
+  `clang -target bpf` (no `libbpf-dev`, no generated `vmlinux.h`), and it needs
+  an `ebpf` build plus root (or `CAP_BPF` + `CAP_MAC_ADMIN`) and a
+  `CONFIG_BPF_LSM`/CO-RE-capable kernel to *load*: CI proves only that it
+  builds, never that it attaches.
 - **vkernel** — KVM/QEMU guest introspection (driven from the hypervisor, needs a
   VMM + libvmi); documented, not built here.
 - **kdump *capture*** — this sensor reports crash-capture *readiness*; forcing a
   kdump snapshot on tamper is a privileged, destructive action left to the
   operator's response policy, not performed by the sensor.
 
-Those need hardware/kernel environments (VMM, Secure Boot, a crash kernel) a CI
-or sandbox build cannot fully exercise; they are tracked in the engine's plan.
+Those need hardware/kernel environments (VMM, Secure Boot, a crash kernel, a
+loadable BPF-LSM host) a CI or sandbox build cannot fully exercise; they are
+tracked in the engine's plan.
 
 ## Documentation
 

@@ -1,8 +1,6 @@
 package kstate
 
 import (
-	"bufio"
-	"bytes"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,15 +15,14 @@ func (c Collector) bpf(warn *[]string) BPFSurface {
 
 	// bpffs mount points from /proc/mounts (type "bpf").
 	if data, err := os.ReadFile(c.path("proc/mounts")); err == nil {
-		sc := bufio.NewScanner(bytes.NewReader(data))
-		for sc.Scan() {
-			f := strings.Fields(sc.Text())
+		for _, line := range scanLines("proc/mounts", data, warn) {
+			f := strings.Fields(line)
 			if len(f) >= 3 && f[2] == "bpf" {
 				s.FSMounts = append(s.FSMounts, f[1])
 			}
 		}
 	} else {
-		*warn = append(*warn, "proc/mounts unreadable: "+err.Error())
+		warnf(warn, "proc/mounts unreadable: %v", err)
 	}
 
 	// Pinned maps/programs under the conventional bpffs root. Enumerating them
@@ -37,6 +34,9 @@ func (c Collector) bpf(warn *[]string) BPFSurface {
 			s.PinnedObjects = append(s.PinnedObjects, filepath.Join("/sys/fs/bpf", e.Name()))
 		}
 		sort.Strings(s.PinnedObjects)
+	} else {
+		// A bpffs root that cannot be listed is a blind spot, not an empty one.
+		warnf(warn, "sys/fs/bpf unreadable (bpffs not mounted?): %v", err)
 	}
 
 	s.JITEnabled = c.sysctlInt("proc/sys/net/core/bpf_jit_enable")
@@ -54,7 +54,9 @@ func (c Collector) memChannels() []MemChannel {
 		m := MemChannel{Path: "/" + p}
 		if info, err := os.Lstat(full); err == nil {
 			m.Present = true
-			m.Mode = info.Mode().Perm().String()
+			// String() keeps the node type, so /dev/mem renders "crw-rw----"
+			// and not "rw-rw----": the device bit is the exposure signal.
+			m.Mode = info.Mode().String()
 		}
 		out = append(out, m)
 	}
@@ -83,8 +85,16 @@ var hardeningSysctls = []struct {
 func (c Collector) posture(warn *[]string) Posture {
 	p := Posture{Sysctls: map[string]string{}}
 
+	// Lockdown is an observation whether or not it can be read: a baseline
+	// taken where lockdown was unreadable must still be able to see a later
+	// regression to "none", so the observation is emitted unconditionally with
+	// level "unknown" when the node is absent or unprivileged.
+	lockdownReadable := false
 	if v := c.readTrim("sys/kernel/security/lockdown"); v != "" {
 		p.Lockdown = parseLockdown(v)
+		lockdownReadable = true
+	} else {
+		warnf(warn, "kernel lockdown state unreadable (securityfs, or kernel built without lockdown)")
 	}
 	if v := c.readTrim("sys/kernel/security/lsm"); v != "" {
 		p.LSM = strings.Split(v, ",")
@@ -108,16 +118,17 @@ func (c Collector) posture(warn *[]string) Posture {
 			Key: key, Value: raw, Level: level, Note: h.note,
 		})
 	}
-	// Lockdown and unsigned-module posture are observations too.
-	if p.Lockdown != "" {
-		lvl := "ok"
-		if p.Lockdown == "none" {
-			lvl = "weak"
-		}
-		p.Observations = append(p.Observations, PostureNote{
-			Key: "lockdown", Value: p.Lockdown, Level: lvl, Note: "kernel lockdown mode",
-		})
+	// Lockdown is an observation too.
+	lvl := "ok"
+	switch {
+	case !lockdownReadable:
+		lvl = "unknown"
+	case p.Lockdown == "none":
+		lvl = "weak"
 	}
+	p.Observations = append(p.Observations, PostureNote{
+		Key: "lockdown", Value: p.Lockdown, Level: lvl, Note: "kernel lockdown mode",
+	})
 	return p
 }
 

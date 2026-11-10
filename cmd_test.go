@@ -2,6 +2,9 @@ package main
 
 import (
 	"bytes"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -138,5 +141,49 @@ func TestCLISignedBaselineFailsClosed(t *testing.T) {
 	os.WriteFile(pub, []byte(strings.Repeat("cd", 32)), 0o644)
 	if code, _, _ := runCLI(t, "drift", "--root", root, "--baseline", b, "--pubkey", pub); code == exitOK {
 		t.Error("corrupted signed baseline verified OK (should fail closed)")
+	}
+}
+
+// TestCLISignedBaselineVerifiedWithKey is the CLI happy path for a signed
+// baseline: record with --sign-key, then drift --pubkey with the matching key
+// must exit 0 and report the signature verified; a different key's public key
+// must fail closed (exit 1). The private key file uses the full 64-byte hex
+// form, exercising ParsePrivateKey's seed/public-half consistency check.
+func TestCLISignedBaselineVerifiedWithKey(t *testing.T) {
+	root := fixtureRoot(t)
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	privFile := filepath.Join(dir, "priv.hex")
+	if err := os.WriteFile(privFile, []byte(hex.EncodeToString(priv)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pubFile := filepath.Join(dir, "pub.hex")
+	if err := os.WriteFile(pubFile, []byte(hex.EncodeToString(pub)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	b := filepath.Join(dir, "base.json")
+	if code, out, errOut := runCLI(t, "baseline", "--root", root, "--out", b, "--sign-key", privFile); code != exitOK {
+		t.Fatalf("baseline: code=%d err=%s", code, errOut)
+	} else if !strings.Contains(out, "(signed)") {
+		t.Errorf("baseline did not report signing: %q", out)
+	}
+	if code, out, errOut := runCLI(t, "drift", "--root", root, "--baseline", b, "--pubkey", pubFile); code != exitOK || !strings.Contains(out, "verified") {
+		t.Errorf("verified drift: code=%d out=%q err=%q", code, out, errOut)
+	}
+	// A different keypair's public key must fail closed: a bad signature is a
+	// finding (exit 1), not a clean report.
+	_, wrong, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongFile := filepath.Join(dir, "wrong.hex")
+	if err := os.WriteFile(wrongFile, []byte(hex.EncodeToString(wrong[32:])), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, _, _ := runCLI(t, "drift", "--root", root, "--baseline", b, "--pubkey", wrongFile); code != exitFinding {
+		t.Errorf("wrong key accepted: code=%d", code)
 	}
 }

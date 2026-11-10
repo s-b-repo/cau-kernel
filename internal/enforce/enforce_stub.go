@@ -19,8 +19,8 @@ func (g *Guard) Wait(context.Context) {}
 func (g *Guard) Close() error         { return nil }
 func (g *Guard) Core() bool           { return false }
 
-func SetPinned(bool) error           { return ErrUnavailable }
-func StatusPinned() (bool, error)    { return false, ErrUnavailable }
+func SetPinned(bool) error                { return ErrUnavailable }
+func StatusPinned() (bool, error)         { return false, ErrUnavailable }
 func BlockInode(BlockedFile, bool) error  { return ErrUnavailable }
 func ListBlocked() ([]BlockedFile, error) { return nil, ErrUnavailable }
 

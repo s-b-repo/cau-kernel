@@ -32,8 +32,9 @@ func pidsMapPinPath() string { return filepath.Join(pinDir, pidsMapName) }
 // KillGuard holds the resident lsm/task_kill + lsm/ptrace_access_check
 // attachments and owns the pinned protected-PID map.
 type KillGuard struct {
-	coll  *ebpf.Collection
-	links []link.Link
+	coll    *ebpf.Collection
+	links   []link.Link
+	created bool
 }
 
 // LoadKillGuard loads the CO-RE kill/ptrace object from objPath
@@ -66,13 +67,18 @@ func LoadKillGuard(objPath string) (*KillGuard, error) {
 		coll.Close()
 		return nil, fmt.Errorf("enforce: protected-PID map %q not found in object", pidsMapName)
 	}
-	_ = os.Remove(pidsMapPinPath())
+	// Same one-resident rule as the enforcer's control map: EEXIST means
+	// another killguard owns the pinned set, and stealing it would let that
+	// guard's Close unlink the pin a live resident depends on.
 	if err := m.Pin(pidsMapPinPath()); err != nil {
 		coll.Close()
+		if pinTaken(err) {
+			return nil, residentBusyError("killguard", "protected-PID map", pidsMapPinPath())
+		}
 		return nil, fmt.Errorf("enforce: pin protected-PID map: %w", err)
 	}
 
-	g := &KillGuard{coll: coll}
+	g := &KillGuard{coll: coll, created: true}
 	for _, name := range []string{killProgKill, killProgPtrace} {
 		p, ok := coll.Programs[name]
 		if !ok {
@@ -90,7 +96,9 @@ func LoadKillGuard(objPath string) (*KillGuard, error) {
 }
 
 // teardown releases whatever was attached/pinned so far (used on partial
-// failure and by Close).
+// failure and by Close). Links go first so the hooks detach before the pin
+// disappears; only a pin this Load created is unlinked, never a pin a second,
+// refused-to-start resident would have stolen.
 func (g *KillGuard) teardown() {
 	for _, l := range g.links {
 		if l != nil {
@@ -98,7 +106,10 @@ func (g *KillGuard) teardown() {
 		}
 	}
 	g.links = nil
-	_ = os.Remove(pidsMapPinPath())
+	if g.created {
+		_ = os.Remove(pidsMapPinPath())
+		g.created = false
+	}
 	if g.coll != nil {
 		g.coll.Close()
 	}
