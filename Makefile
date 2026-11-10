@@ -4,6 +4,7 @@
 #   make test           # go test -race
 #   make bpf-object     # compile the BPF-LSM object into the enforce package
 #   make enforce        # build WITH eBPF enforcement (needs clang + the object)
+#   make regex-audit    # the bug-shape sweep (needs the engine checkout beside it)
 #
 # The default binary is dependency-free and always builds. The eBPF loader is
 # behind the `ebpf` build tag and embeds the compiled object, so enforcement is
@@ -15,7 +16,13 @@ BINARY  ?= cau-kernel
 EBPF_OBJ := internal/enforce/lsm_guard.bpf.o
 NET_OBJ  := internal/enforce/lsm_netshell.bpf.o
 
-.PHONY: build test vet fmt-check bpf-object enforce fuzz clean vm-test
+# The bug-shape sweep lives in the engine repository (scripts/regex-audit.py):
+# one tool and one baseline cover both trees, and the baseline records this
+# tree's hits under the name it has there (cau-kernel/...). CAU_ENGINE points
+# at that checkout; by default it is the directory beside this one.
+CAU_ENGINE ?= $(abspath $(CURDIR)/..)
+
+.PHONY: build test vet fmt-check bpf-object enforce fuzz clean vm-test regex-audit
 
 FUZZTIME ?= 20s
 # Coverage-guided fuzzing of the untrusted-input parsers. Seed corpora also run
@@ -23,6 +30,16 @@ FUZZTIME ?= 20s
 fuzz:
 	$(GO) test ./internal/kstate/ -run '^$$' -fuzz '^FuzzCollect$$' -fuzztime $(FUZZTIME)
 	$(GO) test ./internal/ksign/  -run '^$$' -fuzz '^FuzzOpen$$'    -fuzztime $(FUZZTIME)
+
+# The sweep is a gate: a hit that is not in the baseline is a candidate nobody
+# has read. It fails loudly when the engine checkout is not where it says, so
+# it can never pass by not running.
+regex-audit:
+	@test -f "$(CAU_ENGINE)/scripts/regex-audit.py" || { \
+		echo "the engine checkout is not at $(CAU_ENGINE); set CAU_ENGINE to the engine repository" >&2; \
+		exit 1; }
+	python3 "$(CAU_ENGINE)/scripts/regex-audit.py" --root "$(CURDIR)" --prefix cau-kernel/ \
+		--baseline "$(CAU_ENGINE)/scripts/regex-audit.baseline"
 
 build:
 	$(GO) build -o $(BINARY) .

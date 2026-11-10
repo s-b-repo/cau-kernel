@@ -120,6 +120,22 @@ Those need hardware/kernel environments (VMM, Secure Boot, a crash kernel, a
 loadable BPF-LSM host) a CI or sandbox build cannot fully exercise; they are
 tracked in the engine's plan.
 
+## Development
+
+```sh
+make build          # the default sensor (pure Go, builds anywhere)
+make test           # go test -race
+make enforce        # build with eBPF enforcement (needs clang + the object)
+make regex-audit    # the bug-shape sweep; needs the engine checkout beside this tree
+```
+
+The sweep for swallowed errors, unbounded allocations and broken conditions
+lives in the engine repository (`scripts/regex-audit.py`): one tool and one
+baseline cover both trees, and the baseline records this tree's hits under the
+name it has there (`cau-kernel/…`). `CAU_ENGINE` points at that checkout, and
+the target fails loudly when it is not where it says — a sweep that cannot run
+must never pass by not running.
+
 ## Documentation
 
 Full docs are in [`docs/`](docs/): [architecture](docs/architecture.md),

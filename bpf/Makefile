@@ -54,7 +54,7 @@ vmlinux.h:
 # The CO-RE variants build with the SAME plain clang recipe as the others: no
 # libbpf-dev headers, no bpftool-generated vmlinux.h (see the header comment
 # and README.md).
-core: $(COREOBJ) $(KILLOBJ)
+core: $(COREOBJ) $(KILLOBJ) $(NETOBJ) $(OBJ)
 
 $(COREOBJ): lsm_fileopen.bpf.c
 	$(CLANG) $(CFLAGS) -c $< -o $@
