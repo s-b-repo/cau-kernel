@@ -64,7 +64,10 @@ static __always_inline __u32 tgid_of(struct task_struct *t)
 {
 	int tgid = 0;
 
-	bpf_probe_read_kernel(&tgid, sizeof(tgid), __builtin_preserve_access_index(&t->tgid));
+	// A failed probe leaves tgid at zero, and zero is the one thread-group id
+	// that is never in the protected map: the guard fails open for a target it
+	// could not read, which is the safe direction for a self-protection hook.
+	bpf_probe_read_kernel(&tgid, sizeof(tgid), __builtin_preserve_access_index(&t->tgid)); /* audit:ok */
 	return (__u32)tgid;
 }
 

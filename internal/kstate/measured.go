@@ -45,7 +45,7 @@ func (c Collector) pcrBank() (bank string, pcrs map[string]string, ok bool) {
 	for _, alg := range pcrBanks {
 		dir := "sys/class/tpm/tpm0/pcr-" + alg
 		entries, err := os.ReadDir(c.path(dir))
-		if err != nil {
+		if err != nil { // audit:ok the next bank is tried; "no bank readable" is warned about below
 			continue
 		}
 		got := map[string]string{}

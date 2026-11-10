@@ -257,7 +257,7 @@ var taintBits = []struct {
 // security-relevant. Bits past the table are treated as security-relevant: an
 // unknown bit appearing or disappearing must not pass silently.
 func taintFlag(i uint) (string, bool) {
-	if int(i) < len(taintBits) {
+	if i < uint(len(taintBits)) {
 		b := taintBits[i]
 		return b.letter + ": " + b.note, b.sec
 	}
