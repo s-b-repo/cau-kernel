@@ -80,6 +80,10 @@ func residentBusyError(what, channel, path string) error {
 	return fmt.Errorf("enforce: another %s is already resident (%s %s is pinned); refusing to steal its control channel", what, channel, path)
 }
 
+func bpffsDeniedMsg(pinPath string) string {
+	return fmt.Sprintf("enforce: cannot reach bpffs (%s): permission denied — pid %d needs root or CAP_BPF, and /sys/fs/bpf must be traversable; start the resident from a privileged context", pinPath, os.Getpid())
+}
+
 // removeCreatedPins unlinks only pins this process created; it never touches a
 // pin owned by another resident.
 func removeCreatedPins(control, inode bool) {
@@ -211,6 +215,9 @@ func BlockInode(key BlockedFile, block bool) error {
 		if errors.Is(err, os.ErrNotExist) {
 			return errors.New("enforce: no CO-RE enforcer running (inode blocklist not pinned); start `enforce run --core <obj>`")
 		}
+		if errors.Is(err, os.ErrPermission) {
+			return errors.New(bpffsDeniedMsg(inodeMapPinPath()))
+		}
 		return fmt.Errorf("enforce: open inode blocklist: %w", err)
 	}
 	defer m.Close()
@@ -230,6 +237,9 @@ func ListBlocked() ([]BlockedFile, error) {
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, errors.New("enforce: no CO-RE enforcer running (inode blocklist not pinned)")
+		}
+		if errors.Is(err, os.ErrPermission) {
+			return nil, errors.New(bpffsDeniedMsg(inodeMapPinPath()))
 		}
 		return nil, fmt.Errorf("enforce: open inode blocklist: %w", err)
 	}
@@ -275,6 +285,9 @@ func openPinned() (*ebpf.Map, error) {
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, errors.New("enforce: no resident enforcer is running (control map not pinned); start `cau-kernel enforce run` first")
+		}
+		if errors.Is(err, os.ErrPermission) {
+			return nil, errors.New(bpffsDeniedMsg(mapPinPath()))
 		}
 		return nil, fmt.Errorf("enforce: open pinned map: %w", err)
 	}

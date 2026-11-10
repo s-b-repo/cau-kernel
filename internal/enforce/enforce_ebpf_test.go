@@ -45,6 +45,18 @@ func TestResidentBusyErrorNamesTheChannel(t *testing.T) {
 	}
 }
 
+// TestBpffsDeniedMessageSaysWhatToDo: an unprivileged run that cannot reach
+// bpffs gets a message that names the path it could not open and what the
+// caller needs, not a bare "permission denied" the operator has to decode.
+func TestBpffsDeniedMessageSaysWhatToDo(t *testing.T) {
+	msg := bpffsDeniedMsg(mapPinPath())
+	for _, want := range []string{mapPinPath(), "root", "CAP_BPF"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("message does not mention %q: %s", want, msg)
+		}
+	}
+}
+
 func TestPinPathsAreUnderPinDir(t *testing.T) {
 	for _, p := range []string{mapPinPath(), inodeMapPinPath(), pidsMapPinPath()} {
 		if filepath.Dir(p) != pinDir {
