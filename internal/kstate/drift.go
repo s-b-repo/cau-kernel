@@ -10,6 +10,10 @@ import (
 // input whose loss mutes a security detector. If such an input becomes
 // unreadable between the baseline and the current run the detector is being
 // blinded, so the warning surfaces as an alert rather than as noise.
+//
+// The measured-boot inputs are in the same list as the snapshot ones: the TPM
+// anchors, the IMA counters and the kdump readiness are the detectors
+// `attest verify` exists to run, so losing one of them is an alert.
 var securityRelevantWarnings = []string{
 	"proc/modules",
 	"sys/module",
@@ -18,6 +22,7 @@ var securityRelevantWarnings = []string{
 	"taint",
 	"TPM PCRs",
 	"IMA ",
+	"kexec_crash_size",
 }
 
 // Change is one difference between a baseline Snapshot and a current one.

@@ -35,8 +35,11 @@ $(NETOBJ): lsm_netshell.bpf.c
 $(OBJ): lsm_guard.bpf.c
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
+# readelf -S truncates long section names to "lsm/ptrace_a[...]" in its default
+# column width, so the check has to ask for the wide listing (-SW): a truncated
+# name never matches, and the gate would fail on a perfectly good object.
 verify: $(OBJ)
-	@readelf -S $(OBJ) 2>/dev/null | grep -q 'lsm/bprm' \
+	@readelf -SW $(OBJ) 2>/dev/null | grep -q 'lsm/bprm' \
 		&& echo "OK: BPF-LSM program section present" \
 		|| { echo "FAIL: no lsm program section"; exit 1; }
 
@@ -59,14 +62,17 @@ $(COREOBJ): lsm_fileopen.bpf.c
 $(KILLOBJ): lsm_killguard.bpf.c
 	$(CLANG) $(CFLAGS) -c $< -o $@
 
+# The wide listing (-SW) is required here too: "lsm/ptrace_access_check" is
+# longer than readelf's default column, and the truncated name it prints
+# otherwise never matches the grep.
 verify-core: core
-	@readelf -S $(COREOBJ) 2>/dev/null | grep -q 'lsm/file_open' \
+	@readelf -SW $(COREOBJ) 2>/dev/null | grep -q 'lsm/file_open' \
 		&& echo "OK: CO-RE BPF-LSM file_open section present" \
 		|| { echo "FAIL: no lsm/file_open section"; exit 1; }
-	@readelf -S $(KILLOBJ) 2>/dev/null | grep -q 'lsm/task_kill' \
+	@readelf -SW $(KILLOBJ) 2>/dev/null | grep -q 'lsm/task_kill' \
 		&& echo "OK: CO-RE BPF-LSM task_kill section present" \
 		|| { echo "FAIL: no lsm/task_kill section"; exit 1; }
-	@readelf -S $(KILLOBJ) 2>/dev/null | grep -q 'lsm/ptrace_access_check' \
+	@readelf -SW $(KILLOBJ) 2>/dev/null | grep -q 'lsm/ptrace_access_check' \
 		&& echo "OK: CO-RE BPF-LSM ptrace_access_check section present" \
 		|| { echo "FAIL: no lsm/ptrace_access_check section"; exit 1; }
 

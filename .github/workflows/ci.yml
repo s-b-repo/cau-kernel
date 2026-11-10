@@ -63,22 +63,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - name: Install clang, libbpf-dev and bpftool
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang libbpf-dev binutils
-          # bpftool: try the packaged dispatcher, then a generic build.
-          sudo apt-get install -y --no-install-recommends linux-tools-common linux-tools-generic || true
-      - name: Generate vmlinux.h and build the CO-RE object
-        run: |
-          test -r /sys/kernel/btf/vmlinux || { echo "no kernel BTF on runner"; exit 1; }
-          BPFTOOL="$(command -v bpftool || true)"
-          if [ -z "$BPFTOOL" ]; then BPFTOOL="$(ls /usr/lib/linux-tools/*/bpftool 2>/dev/null | head -1)"; fi
-          test -n "$BPFTOOL" || { echo "bpftool not found"; exit 1; }
-          echo "using bpftool: $BPFTOOL"
-          "$BPFTOOL" btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
-          wc -l bpf/vmlinux.h
-          make -C bpf verify-core
+      - name: Install clang + binutils
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang binutils
+      - name: Build and verify the CO-RE objects
+        # The CO-RE variants are self-contained: they include only <linux/bpf.h>
+        # and read kernel structs through partial declarations carrying
+        # preserve_access_index, so they build with the same plain
+        # `clang -target bpf` recipe as the other objects — no libbpf-dev, no
+        # bpftool and no vmlinux.h generated from the runner's own kernel BTF.
+        # That last dependency used to make this job fail outright on a runner
+        # without kernel BTF, for an object that never needed it.
+        run: make -C bpf verify-core
 
   kmod:
     name: build kernel-module backend

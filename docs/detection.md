@@ -8,13 +8,15 @@ run against a fixture tree, and `--format text|json`.
 
 A full snapshot:
 
-- **Modules** — `/proc/modules` (name, size, refcount, dependents, state) with a
+- **Modules** — `/proc/modules` (name, size, refcount, dependents, state, load
+  address and the module's own taint letters when the kernel exposes them) with a
   `/sys/module` **cross-view**. A module present in `/sys/module` (with an
   `initstate`) but absent from `/proc/modules` is a **hidden-module suspect** — a
   classic rootkit hides from one view but not the other.
 - **Taint** — `/proc/sys/kernel/tainted`, decoded. The security-relevant bits are
   surfaced first: `E` unsigned module, `O` out-of-tree module, `F` force-loaded,
-  `R` force-unloaded, `K` live-patched, `D` kernel OOPS/BUG.
+  `R` force-unloaded, `K` live-patched, `D` kernel OOPS/BUG. A bit beyond the
+  decode table is still reported (`taint-bit-<n>`) instead of being dropped.
 - **eBPF surface** — bpffs mounts (`/proc/mounts`), pinned maps/programs under
   `/sys/fs/bpf`, and the `bpf_jit_harden` / `unprivileged_bpf_disabled` sysctls.
 - **Kernel-memory channels** — presence and mode of `/dev/mem`, `/dev/kmem`,
@@ -47,13 +49,31 @@ cau-kernel baseline --out /var/lib/cau-kernel/base.json --sign-key priv.hex
 cau-kernel drift    --baseline /var/lib/cau-kernel/base.json --pubkey pub.hex
 ```
 
-`drift` exits non-zero on a **security-relevant** change: a module loaded, a new
-taint flag, a newly-exposed kernel-memory channel, a new pinned eBPF object, a
-hardening regression (`ok`→`weak`), or a hidden-module suspect. Module removals
-and benign changes are reported at `info` level (shown with `--all`). The
-baseline is Ed25519-signed; without the matching `--pubkey` a tampered baseline
-is still detected as a drift, and **with** `--pubkey` a tampered baseline fails
-closed (a signature that no longer verifies is itself the finding).
+`drift` exits non-zero on a **security-relevant** change:
+
+| finding | what it means |
+|---|---|
+| `module-added` | a module loaded since the baseline |
+| `module-changed` | the **same** module name, different size or load address — an unload/reload or a DKMS rebuild under the old name |
+| `taint-added` | a new taint flag |
+| `taint-removed` / `taint-cleared` | a taint flag (or a security taint bit) **disappeared** — root zeroing `/proc/sys/kernel/tainted` after loading an unsigned module |
+| `mem-channel` | a kernel-memory channel appeared |
+| `bpf-pinned` | a new pinned eBPF object |
+| `hardening-regression` | a hardening knob weakened: `ok`→`weak`, a knob that was **unreadable** at baseline and is weak now, or a knob that changed while already weak |
+| `input-unreadable` | a monitored input (`/proc/modules`, `/sys/module`, `/proc/mounts`, the taint word, the bpffs root) became unreadable — the detector is now blind there |
+| `hidden-module` | in `/sys/module` but not in `/proc/modules` |
+
+Module removals and benign changes are reported at `info` level (shown with
+`--all`). The baseline is Ed25519-signed; without the matching `--pubkey` a
+tampered baseline is still detected as a drift, and **with** `--pubkey` a
+tampered baseline fails closed (a signature that no longer verifies is itself
+the finding).
+
+A signed baseline is **domain-separated**: the signature covers the document
+kind as well as the payload, so a signed drift baseline cannot be replayed as an
+attestation baseline (or the other way round) even when both were signed with
+the same key. Opening a baseline of the wrong kind fails before any signature
+work.
 
 ## Honest limits
 

@@ -91,6 +91,15 @@ to `/sys/fs/bpf/cau-kernel`; `on`/`off`/`status` flip or read that pinned map.
 The attachment lives only as long as `run`, so killing it releases the freeze.
 Loading needs root (or `CAP_BPF` + `CAP_MAC_ADMIN`) and a BPF-LSM kernel.
 
+**One resident per pinned channel.** The kernel lets a pinned bpffs object be
+opened by other processes but not replaced, so a second `enforce run` cannot
+take the control map over: it refuses to start ("another enforcer is already
+resident") rather than stealing the channel that the running resident's
+`on`/`off`/`status` depends on. Only the resident that created a pin removes it,
+on exit — and the control path (`on`, `off`, `status`, `block`, `unblock`,
+`protect`) opens the pinned map, uses it and closes it again without ever
+unlinking the pin. The killguard's protected-PID map follows the same rule.
+
 ### Path-aware policy (per-inode blocklist)
 
 Load the CO-RE object (`make -C bpf lsm_fileopen.bpf.o`, no `libbpf-dev` needed) to
@@ -133,7 +142,10 @@ sudo ./cau-kernel enforce unprotect --pid 1234
 `killguard` pins the `cau_protected_pids` map and attaches both LSM hooks;
 `protect`/`unprotect` flip that pinned map by thread-group id. Nothing is
 protected until a PID is added. Signals a protected process sends within its own
-thread group are exempt, so it can still manage its own workers.
+thread group are exempt, so it can still manage its own workers. Like the
+enforcer's control map, the protected-PID pin belongs to the resident that
+created it: a second `killguard` refuses to start rather than take it over, and
+the pin is removed only when that resident exits.
 
 Three honest limits:
 

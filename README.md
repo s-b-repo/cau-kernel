@@ -52,10 +52,12 @@ cau-kernel drift    --baseline /var/lib/cau-kernel/baseline.json --pubkey pub.he
 ```
 
 `drift` exits non-zero when a **security-relevant** change appears since the
-baseline — a loaded module, a new taint flag (e.g. an unsigned/out-of-tree
-module), a newly-exposed kernel-memory channel or pinned eBPF object, a hardening
-regression, or a **hidden-module suspect** (present in `/sys/module` but missing
-from `/proc/modules`). Run it from a timer, or on a verified boot, and route the
+baseline — a loaded module, a module **swapped in place** under the same name,
+a taint flag that appeared **or was cleared** (root zeroing the taint word after
+an unsigned module), a newly-exposed kernel-memory channel or pinned eBPF
+object, a hardening regression, a monitored input that went **unreadable**, or a
+**hidden-module suspect** (present in `/sys/module` but missing from
+`/proc/modules`). Run it from a timer, or on a verified boot, and route the
 alert to the console.
 
 ## Enforcement (eBPF build)
@@ -80,7 +82,7 @@ is unavailable.
 
 | Area | Signals |
 |---|---|
-| Modules | `/proc/modules` vs `/sys/module` cross-view (hidden-module reconciliation), refcounts, dependents |
+| Modules | `/proc/modules` vs `/sys/module` cross-view (hidden-module reconciliation), refcounts, dependents, load address, per-module taints |
 | Taint | `/proc/sys/kernel/tainted`, decoded with the unsigned-module (E), out-of-tree (O), force-load (F), live-patch (K) and OOPS (D) bits called out |
 | eBPF surface | bpffs mounts, pinned maps/programs, JIT-harden and `unprivileged_bpf_disabled` sysctls |
 | Kernel memory | presence + mode of `/dev/mem`, `/dev/kmem`, `/dev/port`, `/proc/kcore`; lockdown |
