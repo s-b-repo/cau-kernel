@@ -49,7 +49,10 @@ jobs:
         run: go vet ./...
       - name: gofmt
         run: |
-          out="$(gofmt -l "$(find . -name '*.go')")"
+          # find -exec, not a quoted expansion: a quoted one hands gofmt the
+          # whole list as a single filename, and it then reports every file in
+          # the tree as unformatted.
+          out="$(find . -name '*.go' -exec gofmt -l {} +)"
           if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
       # A workflow GitHub rejects runs zero jobs, with no log to explain why:
       # the run appears as an instant failure and nothing else. This checks
@@ -173,6 +176,14 @@ jobs:
   # The regex sweep for bug shapes is the engine's; the same tool covers this
   # tree (the engine's checkout is the tool's home, and CAU_ENGINE points at
   # it). It is a gate: a hit that is not in the baseline fails the run.
+  #
+  # The engine's checkout goes BESIDE this tree, not inside it — which is what
+  # the Makefile's own contract says ("needs the engine checkout beside this
+  # tree"). The sweep reads the tree it is pointed at: a checkout nested inside
+  # this one would be swept under this tree's prefix, where the baseline does
+  # not record it, and every hit in the engine would look new. The checkout
+  # action refuses a path outside the workspace, so the engine is cloned where
+  # the workspace cannot reach it.
   sweep:
     name: the bug-shape sweep
     runs-on: ubuntu-24.04
@@ -180,10 +191,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          repository: s-b-repo/cau
-          path: engine
+      - name: Check out the engine beside this tree
+        run: |
+          # The sweep's tool and its baseline live in the engine repository.
+          # The clone is shallow: the sweep needs the script, the baseline and
+          # nothing else.
+          git clone --depth 1 https://github.com/s-b-repo/cau.git "$RUNNER_TEMP/engine"
 
       - name: Run the sweep over this tree
         run: |
@@ -192,4 +205,4 @@ jobs:
           # hits under the name it has there. The target fails loudly when the
           # engine checkout is not where it says — a sweep that cannot run
           # must never pass by not running.
-          make regex-audit CAU_ENGINE="$GITHUB_WORKSPACE/engine"
+          make regex-audit CAU_ENGINE="$RUNNER_TEMP/engine"
