@@ -81,14 +81,24 @@ func Diff(baseline, current Snapshot) []Change {
 
 	ch = append(ch, diffTaint(baseline, current)...)
 
-	// Memory channels newly present.
-	basePresent := map[string]bool{}
+	// Memory channels: a new one, or one that is now readable by more than
+	// it was. The mode is the exposure: a channel that was there and has
+	// become world-writable is a new way into the kernel, and a channel that
+	// was there and is now gone is a removal, which is information.
+	baseChannels := map[string]MemChannel{}
 	for _, m := range baseline.MemChannels {
-		basePresent[m.Path] = m.Present
+		baseChannels[m.Path] = m
 	}
 	for _, m := range current.MemChannels {
-		if m.Present && !basePresent[m.Path] {
+		b, known := baseChannels[m.Path]
+		switch {
+		case m.Present && (!known || !b.Present):
 			ch = append(ch, Change{"mem-channel", "kernel-memory channel newly present: " + m.Path, "alert"})
+		case m.Present && known && b.Mode != "" && m.Mode != "" && b.Mode != m.Mode:
+			ch = append(ch, Change{"mem-channel-mode",
+				"kernel-memory channel changed mode since baseline: " + m.Path + " (" + b.Mode + " -> " + m.Mode + ")", "alert"})
+		case !m.Present && known && b.Present:
+			ch = append(ch, Change{"mem-channel-removed", "kernel-memory channel gone since baseline: " + m.Path, "info"})
 		}
 	}
 

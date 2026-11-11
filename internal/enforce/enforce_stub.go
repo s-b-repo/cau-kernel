@@ -27,9 +27,11 @@ func ListBlocked() ([]BlockedFile, error) { return nil, ErrUnavailable }
 // NetshellGuard mirrors the eBPF build's shape so the command compiles identically.
 type NetshellGuard struct{}
 
-func LoadNetshell(NetshellConfig) (*NetshellGuard, error)          { return nil, ErrUnavailable }
-func (g *NetshellGuard) Events(context.Context, func(Event)) error { return ErrUnavailable }
-func (g *NetshellGuard) Close() error                              { return nil }
+func LoadNetshell(NetshellConfig) (*NetshellGuard, error) { return nil, ErrUnavailable }
+func (g *NetshellGuard) Events(context.Context, func(Event), func(error)) error {
+	return ErrUnavailable
+}
+func (g *NetshellGuard) Close() error { return nil }
 
 // KillGuard mirrors the eBPF build's shape so the command compiles identically.
 type KillGuard struct{}

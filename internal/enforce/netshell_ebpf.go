@@ -8,6 +8,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -115,8 +116,13 @@ func (g *NetshellGuard) configure(cfg NetshellConfig) error {
 	return nil
 }
 
-// Events delivers guard events until ctx is done.
-func (g *NetshellGuard) Events(ctx context.Context, fn func(Event)) error {
+// Events delivers guard events until ctx is done. A record the decoder cannot
+// read is not dropped in silence: onBad is called with the reason, so a guard
+// that is losing events says so rather than looking quiet.
+//
+// The events carry the time the guard read them: the kernel has no wall clock
+// to give, and a reader wants to know how old a finding is.
+func (g *NetshellGuard) Events(ctx context.Context, fn func(Event), onBad func(error)) error {
 	stop := context.AfterFunc(ctx, func() { _ = g.events.Close() })
 	defer stop()
 	for {
@@ -127,9 +133,15 @@ func (g *NetshellGuard) Events(ctx context.Context, fn func(Event)) error {
 			}
 			return fmt.Errorf("enforce: read event: %w", err)
 		}
-		if e, err := DecodeEvent(rec.RawSample); err == nil {
-			fn(e)
+		e, derr := DecodeEvent(rec.RawSample)
+		if derr != nil {
+			if onBad != nil {
+				onBad(derr)
+			}
+			continue
 		}
+		e.Time = time.Now().UTC()
+		fn(e)
 	}
 }
 

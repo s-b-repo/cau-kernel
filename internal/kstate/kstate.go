@@ -161,16 +161,13 @@ func (c Collector) modules(warn *[]string) (mods []Module, sysDirs []string, hid
 				continue
 			}
 			m := Module{Name: f[0], State: f[4]}
-			// Trailing fields after "name size refcount used_by state" are the
-			// load address and, when the kernel exposes it, the module's own
-			// taint letters ("(C,O)" / "O" / "[permanent]" for built-ins).
+			// The trailing fields after "name size refcount used_by
+			// state" are the load address and, when the module carries
+			// taints, the taint letters ("(O)" / "(OE)").
 			for _, tok := range f[5:] {
 				switch {
 				case isAddressToken(tok):
 					m.Address = tok
-				case taintsTokenIsBuiltin(tok):
-					m.Taints = tok
-					m.Builtin = true
 				case isTaintsToken(tok):
 					m.Taints = tok
 					m.OutOfTree = strings.ContainsAny(stripNonLetters(tok), "O")
@@ -186,7 +183,15 @@ func (c Collector) modules(warn *[]string) (mods []Module, sysDirs []string, hid
 			} else {
 				warnf(warn, "proc/modules: unparseable refcount for %s (%q)", f[0], f[2])
 			}
-			if f[3] != "-" {
+			// "[permanent]" is in the used-by field, not in the taints:
+			// the kernel prints it there for a module that has an init
+			// but no exit, so it can never be unloaded. Read from the
+			// taints field it was never found, and the module's
+			// used-by list carried a fake dependency instead.
+			if deps, permanent := splitPermanent(f[3]); permanent {
+				m.Builtin = true
+				m.UsedBy = deps
+			} else if f[3] != "-" {
 				m.UsedBy = splitList(f[3])
 			}
 			mods = append(mods, m)
@@ -224,9 +229,15 @@ func (c Collector) modules(warn *[]string) (mods []Module, sysDirs []string, hid
 }
 
 // taintBits maps a taint bit position to (letter, security-relevant, meaning).
-// The table is the canonical Linux taint list; a bit set beyond it (a future
-// kernel taint, or a hand-crafted value written by an attacker) still has to be
-// visible, so taintFlag falls back to "taint-bit-<n>" for unknown positions.
+// The table is the canonical Linux taint list (include/linux/panic.h); a bit
+// set beyond it (a future kernel taint, or a hand-crafted value written by an
+// attacker) still has to be visible, so taintFlag falls back to "taint-bit-<n>"
+// for unknown positions.
+//
+// The word's bit i IS the kernel's flag i: /proc/sys/kernel/tainted is the
+// kernel's TAINT_* mask as it stands, with no shift (bit 12 is "O", bit 13 is
+// "E"). The engine's own boot scan (internal/bootscan in the cau repository)
+// decodes the same word with the same table, and the two must agree.
 var taintBits = []struct {
 	letter string
 	sec    bool
@@ -298,7 +309,7 @@ func isAddressToken(tok string) bool {
 }
 
 // isTaintsToken recognizes a /proc/modules trailing-taints field: a short
-// letter/bracket token with no digits, e.g. "(C,O)", "O", "[permanent]".
+// letter/bracket token with no digits, e.g. "(O)" or "(OE)".
 func isTaintsToken(tok string) bool {
 	if tok == "" {
 		return false
@@ -311,10 +322,6 @@ func isTaintsToken(tok string) bool {
 	return true
 }
 
-func taintsTokenIsBuiltin(tok string) bool {
-	return strings.Contains(strings.ToLower(tok), "permanent")
-}
-
 func stripNonLetters(s string) string {
 	var b strings.Builder
 	for _, r := range s {
@@ -325,6 +332,28 @@ func stripNonLetters(s string) string {
 	return b.String()
 }
 
+// splitPermanent splits the used-by field of a /proc/modules line into the
+// modules that use it and whether the module is permanent.
+//
+// The kernel prints "[permanent]," in the used-by field for a module that has
+// an init but no exit: it can never be unloaded, so nothing can be using it
+// either. It is not a dependency, and the list must not carry one.
+func splitPermanent(field string) (deps []string, permanent bool) {
+	for _, item := range strings.Split(field, ",") {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if strings.EqualFold(item, "[permanent]") {
+			permanent = true
+			continue
+		}
+		deps = append(deps, item)
+	}
+	return deps, permanent
+}
+
+// splitList splits a comma-separated list.
 func splitList(s string) []string {
 	s = strings.TrimSuffix(strings.TrimSpace(s), ",")
 	if s == "" {

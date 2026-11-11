@@ -30,8 +30,13 @@ cau ps --kernel-events /run/cau-kernel.jsonl        # correlate with live proces
 | Flag | Default | Applies to |
 |---|---|---|
 | `--mode` | `audit` | interpreters on network stdio (shells, Python, Perl, Ruby, PHP, Lua, Node, awk) |
-| `--any-program` | `audit` | every other program on network stdio, which catches `cp /bin/bash /tmp/x` |
+| `--any-program` | `audit` | every program on network stdio, interpreters included, which catches `cp /bin/bash /tmp/x` |
 | `--memfd` | `audit` | execution from a memfd, the fileless path nothing on disk records |
+
+`--mode off` turns off the *interpreter* rule, not the check: the
+any-program policy still applies to interpreters, so an interpreter on network
+stdio is refused under `--mode off --any-program deny`. The two policies never
+leave a program unexamined.
 
 Start in audit: `deny` refuses a legitimate inetd-style service as readily as a
 reverse shell, and `--memfd deny` breaks `runc`, which re-executes through a memfd.
@@ -52,13 +57,26 @@ Like every guard here it fails open: the attachment lives with the process, so a
 crash or `Ctrl-C` lifts the policy. `packaging/cau-kernel-guard.service` runs it,
 and `cau defend --kernel-events` joins its log with the other layers.
 
+Each event the guard writes says which process it happened to: the line
+carries the process's start time (`start_ticks`, the same clock and unit as
+field 22 of `/proc/<pid>/stat`), the thread that called `execve` (`tid`) and
+the time the event was read (`time`). A PID is reused and the log outlives the
+processes it names, so the start time is what lets the reader match an event to
+the process it was about and to no other — and what lets it tell an exec the
+guard *saw* from one it merely heard about later. The whole line is documented
+in the README.
+
 ## Proving a guard
 
 `make vm-test` boots the running kernel in QEMU with a one-program initramfs and
-exercises the guards end to end, 54 scenarios on 7.1.5, the kill guard included: the real verifier loads
+exercises the guards end to end, 57 scenarios on 7.1.5, the kill guard included: the real verifier loads
 them, real `execve` calls run through the hooks, and the real `cau-kernel` binary
 blocks a running process's file through `/proc/<pid>/exe`. It needs no root on the host, because the guest owns
 its whole kernel. `KERNEL=/path/to/bzImage make vm-test` tests another kernel.
+
+It also proves the event contract: the start time the guard records is compared
+with the live process's own `starttime` field, on the real kernel, so the
+number the engine matches on is the number `/proc` reports.
 
 ## Which backend?
 
@@ -99,6 +117,14 @@ resident") rather than stealing the channel that the running resident's
 on exit — and the control path (`on`, `off`, `status`, `block`, `unblock`,
 `protect`) opens the pinned map, uses it and closes it again without ever
 unlinking the pin. The killguard's protected-PID map follows the same rule.
+
+A pin in bpffs is a filesystem entry, so it outlives the resident that made
+it: a resident that was killed left its pin behind, and the next one was
+refused for the same reason a live resident would be. The resident therefore
+holds an advisory lock as well (`/run/cau-kernel/*.lock`), which the kernel
+releases when the process dies however it dies. A pin that is still there with
+the lock free belonged to a resident that is gone, and it is replaced. Stopping
+the resident is the whole recovery: no pin to remove by hand.
 
 ### Path-aware policy (per-inode blocklist)
 

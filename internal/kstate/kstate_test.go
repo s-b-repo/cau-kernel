@@ -185,18 +185,22 @@ func TestCollectWarnsOnOversizedMountsLine(t *testing.T) {
 
 // ── BUG 8: Module.OutOfTree / Builtin must not always serialize false ─────────
 
+// The kernel writes a /proc/modules line as
+//
+//	name size refcount used_by state address [taints]
+//
+// where the taints are the letters of the taint bits in parentheses ("(OE)")
+// and "[permanent]," stands in the used-by field for a module that has an init
+// but no exit: it can never be unloaded, so nothing can be using it either.
 func TestModuleOutOfTreeAndBuiltinParsed(t *testing.T) {
 	root := t.TempDir()
-	// Real /proc/modules lines: "name size refcount used_by state address taints"
-	// with the taint column present only for tainted modules. A built-in shows
-	// "[permanent]" in place of the address, and an out-of-tree module carries
-	// an O letter in its taints column.
 	writeNode(t, root, "proc/modules",
-		"unsigned_mod 16384 0 - Live 0xffffffffc0a00000 (C,O,E)\n"+
+		"unsigned_mod 16384 0 - Live 0xffffffffc0a00000 (OE)\n"+
 			"clean_mod 8192 0 - Live 0xffffffffc0b00000\n"+
-			"builtin_mod 1 0 - Live 0x0000000000000000 [permanent]\n"+
-			"outoftree_only 4096 0 - Live 0xffffffffc0c00000 O\n"+
-			"no_address 4096 0 - Live O\n")
+			"builtin_mod 1 0 [permanent], Live 0x0000000000000000\n"+
+			"outoftree_only 4096 0 - Live 0xffffffffc0c00000 (O)\n"+
+			"no_address 4096 0 - Live (O)\n"+
+			"used_mod 4096 1 user_mod, Live 0xffffffffc0d00000\n")
 	s := Collector{Root: root}.Collect()
 	got := map[string]Module{}
 	for _, m := range s.Modules {
@@ -208,8 +212,11 @@ func TestModuleOutOfTreeAndBuiltinParsed(t *testing.T) {
 	if got["clean_mod"].OutOfTree {
 		t.Errorf("clean module marked out-of-tree: %+v", got["clean_mod"])
 	}
-	if !got["builtin_mod"].Builtin || !strings.Contains(got["builtin_mod"].Taints, "permanent") {
+	if !got["builtin_mod"].Builtin {
 		t.Errorf("built-in not detected: %+v", got["builtin_mod"])
+	}
+	if len(got["builtin_mod"].UsedBy) != 0 {
+		t.Errorf("a permanent module has a used-by list: %+v", got["builtin_mod"])
 	}
 	if got["builtin_mod"].OutOfTree {
 		t.Errorf("built-in marked out-of-tree: %+v", got["builtin_mod"])
@@ -225,6 +232,9 @@ func TestModuleOutOfTreeAndBuiltinParsed(t *testing.T) {
 	}
 	if got["unsigned_mod"].Taints == "" {
 		t.Errorf("taints column not retained: %+v", got["unsigned_mod"])
+	}
+	if len(got["used_mod"].UsedBy) != 1 || got["used_mod"].UsedBy[0] != "user_mod" {
+		t.Errorf("the used-by list is wrong: %+v", got["used_mod"])
 	}
 }
 

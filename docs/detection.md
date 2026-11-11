@@ -58,16 +58,22 @@ cau-kernel drift    --baseline /var/lib/cau-kernel/base.json --pubkey pub.hex
 | `taint-added` | a new taint flag |
 | `taint-removed` / `taint-cleared` | a taint flag (or a security taint bit) **disappeared** — root zeroing `/proc/sys/kernel/tainted` after loading an unsigned module |
 | `mem-channel` | a kernel-memory channel appeared |
+| `mem-channel-mode` | a kernel-memory channel is still there but its mode changed — a `/dev/mem` that became world-writable is a new way into the kernel |
 | `bpf-pinned` | a new pinned eBPF object |
 | `hardening-regression` | a hardening knob weakened: `ok`→`weak`, a knob that was **unreadable** at baseline and is weak now, or a knob that changed while already weak |
 | `input-unreadable` | a monitored input (`/proc/modules`, `/sys/module`, `/proc/mounts`, the taint word, the bpffs root) became unreadable — the detector is now blind there |
 | `hidden-module` | in `/sys/module` but not in `/proc/modules` |
 
 Module removals and benign changes are reported at `info` level (shown with
-`--all`). The baseline is Ed25519-signed; without the matching `--pubkey` a
-tampered baseline is still detected as a drift, and **with** `--pubkey` a
-tampered baseline fails closed (a signature that no longer verifies is itself
-the finding).
+`--all`): a module that was unloaded (`module-removed`), a module's used-by
+list that changed (`module-refs-changed`) and a kernel-memory channel that
+disappeared (`mem-channel-removed`). The baseline is Ed25519-signed, and a
+signed baseline **fails closed without its public key**: `drift` refuses to
+compare against a baseline whose signature it cannot check, because an attacker
+who can rewrite the baseline can also rewrite what it says, and a run that
+reported "no drift" from an unverified baseline would be reporting what the
+attacker wanted it to report. Pass `--pubkey` and a tampered baseline fails
+closed too (a signature that no longer verifies is itself the finding).
 
 A signed baseline is **domain-separated**: the signature covers the document
 kind as well as the payload, so a signed drift baseline cannot be replayed as an

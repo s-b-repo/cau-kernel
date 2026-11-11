@@ -120,8 +120,8 @@ func enforceRun(args []string, stdout, stderr io.Writer) int {
 func enforceNetshell(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("enforce netshell", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	shell := fs.String("mode", "audit", "interpreters on network stdio: off, audit or deny")
-	any := fs.String("any-program", "audit", "every other program on network stdio, which catches a renamed shell: off, audit or deny")
+	shell := fs.String("mode", "audit", "interpreters on network stdio: off, audit or deny (off leaves the any-program policy in charge)")
+	any := fs.String("any-program", "audit", "every program on network stdio, interpreters included, which catches a renamed shell: off, audit or deny")
 	memfd := fs.String("memfd", "audit", "execution from a memfd: off, audit or deny (deny breaks runc, which re-executes through one)")
 	logPath := fs.String("log", "", "append events as JSON lines to this file (`cau ps --kernel-events` reads it)")
 	if err := fs.Parse(args); err != nil {
@@ -132,6 +132,7 @@ func enforceNetshell(args []string, stdout, stderr io.Writer) int {
 		return failf(stderr, exitUsage, "%v", err)
 	}
 	var log io.Writer
+	var undecodable int
 	if *logPath != "" {
 		f, err := os.OpenFile(*logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
@@ -157,8 +158,19 @@ func enforceNetshell(args []string, stdout, stderr io.Writer) int {
 		if log != nil {
 			fmt.Fprintln(log, string(line))
 		}
+	}, func(derr error) {
+		// A record the decoder cannot read is an event the operator would
+		// never hear about. Say how many were lost, once, rather than
+		// dropping them in silence.
+		undecodable++
+		if undecodable == 1 {
+			fmt.Fprintf(stderr, "[WARN] an event could not be decoded and was dropped: %v\n", derr)
+		}
 	})
 	fmt.Fprintln(stderr, "[*] detaching network-shell guard (policy lifted)")
+	if undecodable > 1 {
+		fmt.Fprintf(stderr, "[WARN] %d events could not be decoded and were dropped\n", undecodable)
+	}
 	if err != nil {
 		return failf(stderr, exitFailed, "%v", err)
 	}

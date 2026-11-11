@@ -68,6 +68,12 @@ func Wrap(v any, priv ed25519.PrivateKey) (Envelope, error) {
 	}
 	e := Envelope{Domain: domainOf(v), Payload: raw}
 	if priv != nil {
+		// ed25519.Sign panics on a key of the wrong length, and this is an
+		// exported function: a caller that built a key by hand gets an
+		// error, not a panic in the middle of a baseline recording.
+		if len(priv) != ed25519.PrivateKeySize {
+			return Envelope{}, fmt.Errorf("ksign: the private key is %d bytes, want %d", len(priv), ed25519.PrivateKeySize)
+		}
 		e.Signature = hex.EncodeToString(ed25519.Sign(priv, e.signedBytes()))
 	}
 	return e, nil
@@ -76,26 +82,35 @@ func Wrap(v any, priv ed25519.PrivateKey) (Envelope, error) {
 // Open verifies the envelope and unmarshals the payload into v. The caller's
 // destination type fixes the expected document kind; a mismatch fails closed
 // before any signature work, so a baseline of one kind can never be replayed as
-// another kind — even by a caller that supplies no key. With pub non-nil the
-// signature is required and must verify over Domain+"\x00"+Payload; with pub
-// nil the payload is read without verifying (drift detection still works, but
-// is not tamper-resistant).
+// another kind — even by a caller that supplies no key.
+//
+// With pub non-nil the signature is required and must verify over
+// Domain+"\x00"+Payload. With pub nil the payload is read without verifying
+// only when the document carries no signature at all: a document that *is*
+// signed and whose signature cannot be checked is refused, because an attacker
+// who can rewrite the baseline can also rewrite what it says, and a run that
+// reports "no drift" from an unverified baseline says exactly what the
+// attacker wants it to say.
 func (e Envelope) Open(v any, pub ed25519.PublicKey) error {
 	want := domainOf(v)
 	if e.Domain != want {
 		return fmt.Errorf("ksign: baseline is a %q document but a %q was expected", e.Domain, want)
 	}
-	if pub != nil {
-		if e.Signature == "" {
-			return fmt.Errorf("%w: baseline is unsigned but a key was required", ErrBadSignature)
+	if pub == nil {
+		if e.Signature != "" {
+			return fmt.Errorf("%w: the baseline is signed but no public key was given, so its signature cannot be checked", ErrBadSignature)
 		}
-		sig, err := hex.DecodeString(e.Signature)
-		if err != nil {
-			return ErrBadSignature
-		}
-		if len(pub) != ed25519.PublicKeySize || !ed25519.Verify(pub, e.signedBytes(), sig) {
-			return ErrBadSignature
-		}
+		return json.Unmarshal(e.Payload, v)
+	}
+	if e.Signature == "" {
+		return fmt.Errorf("%w: baseline is unsigned but a key was required", ErrBadSignature)
+	}
+	sig, err := hex.DecodeString(e.Signature)
+	if err != nil {
+		return ErrBadSignature
+	}
+	if len(pub) != ed25519.PublicKeySize || !ed25519.Verify(pub, e.signedBytes(), sig) {
+		return ErrBadSignature
 	}
 	return json.Unmarshal(e.Payload, v)
 }

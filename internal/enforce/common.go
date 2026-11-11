@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"time"
 )
 
 // ErrUnavailable is returned by the default (non-eBPF) build's enforcement
@@ -56,9 +57,18 @@ func ParseMode(s string) (Mode, error) {
 
 // NetshellConfig is the guard's policy.
 type NetshellConfig struct {
-	Interpreters Mode // an interpreter on network stdio
-	AnyProgram   Mode // any other program on network stdio
-	Memfd        Mode // execution from a memfd
+	// Interpreters is the policy for a known interpreter (a shell, python,
+	// perl…) on network stdio. Off means this policy does not apply; the
+	// any-program policy still does, so "off" here is not "the check is
+	// off", it is "the interpreter rule is off".
+	Interpreters Mode
+	// AnyProgram is the policy for any program on network stdio, which is
+	// what catches a renamed shell. It applies to interpreters too, so it
+	// is the policy that refuses a shell when the interpreter policy is
+	// off.
+	AnyProgram Mode
+	// Memfd is the policy for execution from a memfd.
+	Memfd Mode
 }
 
 // ParseNetshellConfig reads the three policy flags.
@@ -106,7 +116,15 @@ const (
 // Event is one exec the guard saw. Field names are the JSON-lines contract with
 // `cau ps --kernel-events`.
 type Event struct {
-	PID    uint32 `json:"pid"`
+	// PID is the process (thread-group) id: what an operator looks up in
+	// /proc. TID is the thread that called execve, which for a threaded
+	// program is not the same thing.
+	PID uint32 `json:"pid"`
+	TID uint32 `json:"tid"`
+	// TGID carries the same number as PID, under the name a reader of an
+	// older log expects. It is an alias, not a second identifier: the
+	// process id is one number, and a log written by this version is still
+	// read correctly by an engine that predates the tid field.
 	TGID   uint32 `json:"tgid"`
 	UID    uint32 `json:"uid"`
 	Reason string `json:"reason"`
@@ -114,10 +132,19 @@ type Event struct {
 	Peer   string `json:"peer,omitempty"`
 	Comm   string `json:"comm"`
 	Exe    string `json:"exe"`
+	// StartTicks is the process's start time in USER_HZ ticks — the same
+	// clock and the same unit as field 22 of /proc/<pid>/stat. It is what
+	// turns an event into an attribution: a PID alone is reused, and the
+	// log outlives the processes it names, so an event that says which
+	// process it happened to can be matched to that one and to no other.
+	StartTicks uint64 `json:"start_ticks,omitempty"`
+	// Time is when the guard read the event. The kernel has no wall clock
+	// to give, and a reader wants to know how old a finding is.
+	Time time.Time `json:"time,omitempty"`
 }
 
 // eventSize is sizeof(struct event) in lsm_netshell.bpf.c.
-const eventSize = 4*5 + 2*2 + 16 + 16 + 16
+const eventSize = 4*5 + 2*2 + 16 + 16 + 16 + 8
 
 // DecodeEvent parses one ring-buffer record. The record comes from the kernel,
 // but its layout is a contract between two build artefacts, so it is checked.
@@ -126,7 +153,8 @@ func DecodeEvent(raw []byte) (Event, error) {
 		return Event{}, fmt.Errorf("enforce: short event: %d bytes, want %d", len(raw), eventSize)
 	}
 	le := binary.LittleEndian
-	e := Event{PID: le.Uint32(raw[0:]), TGID: le.Uint32(raw[4:]), UID: le.Uint32(raw[8:]), Denied: le.Uint32(raw[16:]) != 0}
+	e := Event{PID: le.Uint32(raw[0:]), TID: le.Uint32(raw[4:]), UID: le.Uint32(raw[8:]), Denied: le.Uint32(raw[16:]) != 0}
+	e.TGID = e.PID
 	switch le.Uint32(raw[12:]) {
 	case 1:
 		e.Reason = ReasonNetshell
@@ -148,6 +176,7 @@ func DecodeEvent(raw []byte) (Event, error) {
 	}
 	e.Comm = cString(raw[40:56])
 	e.Exe = cString(raw[56:72])
+	e.StartTicks = le.Uint64(raw[72:])
 	return e, nil
 }
 

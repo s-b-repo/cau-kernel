@@ -3,12 +3,29 @@ package kstate
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 )
+
+// hashFile returns the hex SHA-256 of a file, read in a stream. The file is
+// never held in memory: the files digested here are the ones that grow without
+// bound.
+func hashFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
 
 // Measured is the boot-anchored measurement state: TPM PCRs, the IMA runtime
 // measurement log summary, and kdump/kexec readiness. PCRs and the IMA-log
@@ -98,9 +115,13 @@ func (c Collector) Measured() Measured {
 	}
 	// Digest the ascii measurement log so a baseline can detect the log being
 	// truncated or rewritten (tamper-evidence of the record itself).
-	if data, err := os.ReadFile(c.path("sys/kernel/security/ima/ascii_runtime_measurements")); err == nil {
-		sum := sha256.Sum256(data)
-		m.IMALogSHA256 = hex.EncodeToString(sum[:])
+	//
+	// The log is streamed, not read: it grows without bound and is routinely
+	// hundreds of megabytes on a long-running host, and the sensor runs on the
+	// host it watches. Reading it whole would be a memory spike on the very
+	// command an operator runs under pressure.
+	if sum, err := hashFile(c.path("sys/kernel/security/ima/ascii_runtime_measurements")); err == nil {
+		m.IMALogSHA256 = sum
 	}
 
 	// kdump / kexec crash-capture readiness.

@@ -66,6 +66,7 @@ type Guard struct {
 	lnk     link.Link
 	core    bool
 	created bool
+	lock    *residentLock
 }
 
 // pinTaken reports whether a failed Pin means the bpffs entry already exists —
@@ -134,10 +135,17 @@ func Load(corePath string) (*Guard, error) {
 		return nil, err
 	}
 	// Pin without pre-emptive unlink: a successful Pin means this resident owns
-	// the control channel, an EEXIST means another one already does.
+	// the control channel, an EEXIST means another one already does — unless
+	// that one died and left the pin behind, which the lock tells apart.
 	var pinnedCtl, pinnedInode bool
-	if err := m.Pin(mapPinPath()); err != nil {
+	lock, err := takeResidentLock("enforce")
+	if err != nil {
 		coll.Close()
+		return nil, err
+	}
+	if err := pinChannel(m, mapPinPath(), lock); err != nil {
+		coll.Close()
+		lock.release()
 		if pinTaken(err) {
 			return nil, residentBusyError("enforcer", "control map", mapPinPath())
 		}
@@ -149,11 +157,13 @@ func Load(corePath string) (*Guard, error) {
 		if !ok {
 			removeCreatedPins(pinnedCtl, pinnedInode)
 			coll.Close()
+			lock.release()
 			return nil, fmt.Errorf("enforce: inode map %q not found in CO-RE object", inodeMapName)
 		}
-		if err := im.Pin(inodeMapPinPath()); err != nil {
+		if err := pinChannel(im, inodeMapPinPath(), lock); err != nil {
 			removeCreatedPins(pinnedCtl, pinnedInode)
 			coll.Close()
+			lock.release()
 			if pinTaken(err) {
 				return nil, residentBusyError("enforcer", "inode map", inodeMapPinPath())
 			}
@@ -165,15 +175,17 @@ func Load(corePath string) (*Guard, error) {
 	if !ok {
 		removeCreatedPins(pinnedCtl, pinnedInode)
 		coll.Close()
+		lock.release()
 		return nil, fmt.Errorf("enforce: program %q not found", prog)
 	}
 	l, err := link.AttachLSM(link.LSMOptions{Program: p})
 	if err != nil {
 		removeCreatedPins(pinnedCtl, pinnedInode)
 		coll.Close()
+		lock.release()
 		return nil, fmt.Errorf("enforce: attach LSM (need CONFIG_BPF_LSM and `bpf` in /sys/kernel/security/lsm): %w", err)
 	}
-	return &Guard{coll: coll, lnk: l, core: core, created: true}, nil
+	return &Guard{coll: coll, lnk: l, core: core, created: true, lock: lock}, nil
 }
 
 // Wait blocks until ctx is done (the resident enforcer loop).
@@ -200,6 +212,7 @@ func (g *Guard) Close() error {
 	if g.coll != nil {
 		g.coll.Close()
 	}
+	g.lock.release()
 	return first
 }
 

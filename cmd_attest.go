@@ -137,13 +137,17 @@ func attestVerify(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	var base kstate.Measured
+	if pub == nil && env.Signature != "" {
+		// The baseline is signed and the signature cannot be checked, so
+		// the run cannot say the boot chain is the one that was measured.
+		return failf(stderr, exitFinding,
+			"the baseline is signed but no --pubkey was given, so its signature cannot be checked; pass the public key that signed it")
+	}
 	if err := env.Open(&base, pub); err != nil {
 		return failf(stderr, exitFinding, "baseline: %v", err)
 	}
 	if pub != nil {
 		fmt.Fprintln(stdout, "[*] baseline signature verified")
-	} else if env.Signature != "" {
-		fmt.Fprintln(stderr, "[WARN] baseline is signed but no --pubkey given; signature not checked")
 	}
 	cur := kstate.Collector{Root: *root}.Measured()
 	changes := kstate.DiffMeasured(base, cur)

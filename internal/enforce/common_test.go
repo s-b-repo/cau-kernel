@@ -8,8 +8,8 @@ import (
 func rawEvent(reason uint32, family uint16, addr []byte) []byte {
 	b := make([]byte, eventSize)
 	le := binary.LittleEndian
-	le.PutUint32(b[0:], 7)
-	le.PutUint32(b[4:], 7)
+	le.PutUint32(b[0:], 7) // pid: the process
+	le.PutUint32(b[4:], 9) // tid: the thread that called execve
 	le.PutUint32(b[8:], 1000)
 	le.PutUint32(b[12:], reason)
 	le.PutUint32(b[16:], 1)
@@ -18,6 +18,7 @@ func rawEvent(reason uint32, family uint16, addr []byte) []byte {
 	copy(b[24:], addr)
 	copy(b[40:], "nc\x00")
 	copy(b[56:], "sh\x00")
+	le.PutUint64(b[72:], 123456)
 	return b
 }
 
@@ -29,10 +30,54 @@ func TestDecodeEvent(t *testing.T) {
 	if e.PID != 7 || e.UID != 1000 || e.Reason != ReasonNetshell || !e.Denied || e.Peer != "192.0.2.1:443" || e.Comm != "nc" || e.Exe != "sh" {
 		t.Fatalf("got %+v", e)
 	}
+	// The thread that called execve is not the process an operator looks up.
+	if e.TID != 9 {
+		t.Errorf("tid = %d, want 9", e.TID)
+	}
+	// "tgid" is the alias of "pid" an older reader of this log expects.
+	if e.TGID != e.PID {
+		t.Errorf("tgid = %d, want the pid %d", e.TGID, e.PID)
+	}
+	// The start time is what makes an event an attribution rather than a
+	// coincidence: it is compared with the live process's own starttime.
+	if e.StartTicks != 123456 {
+		t.Errorf("start_ticks = %d, want 123456", e.StartTicks)
+	}
 	v6 := make([]byte, 16)
 	v6[15] = 1
 	if e, err = DecodeEvent(rawEvent(3, 10, v6)); err != nil || e.Peer != "[::1]:443" || e.Reason != ReasonNetStdio {
 		t.Fatalf("v6: %+v %v", e, err)
+	}
+}
+
+// The event layout is a contract between two build artefacts: this Go decoder
+// and the struct in bpf/lsm_netshell.bpf.c. The offsets below are the C
+// struct's, and a change on either side that the other does not follow is a
+// guard that reports nonsense.
+func TestEventLayoutMatchesTheCStruct(t *testing.T) {
+	if eventSize != 80 {
+		t.Errorf("event size = %d, want 80 (sizeof(struct event) in lsm_netshell.bpf.c)", eventSize)
+	}
+	// The field offsets the decoder reads, in the order it reads them.
+	for _, off := range []struct {
+		name string
+		at   int
+	}{
+		{"pid", 0},
+		{"tid", 4},
+		{"uid", 8},
+		{"reason", 12},
+		{"denied", 16},
+		{"family", 20},
+		{"dport", 22},
+		{"daddr", 24},
+		{"comm", 40},
+		{"exe", 56},
+		{"start_ticks", 72},
+	} {
+		if off.at >= eventSize {
+			t.Errorf("%s at %d is past the end of the event", off.name, off.at)
+		}
 	}
 }
 

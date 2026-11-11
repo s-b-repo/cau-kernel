@@ -78,6 +78,36 @@ host. Attaching needs root (or `CAP_BPF` + `CAP_MAC_ADMIN`) and a kernel with
 (built without `-tags ebpf`) has no eBPF dependency and reports that enforcement
 is unavailable.
 
+A pin in bpffs outlives the process that made it, so a resident that was killed
+left a pin behind and the next one was refused with "another enforcer is
+already resident". The resident now holds an advisory lock as well, which the
+kernel releases when the process dies however it dies: a pin that is still
+there with the lock free belonged to a resident that is gone, and it is
+replaced. Stopping the resident is the whole recovery.
+
+### The guard's event log
+
+`cau-kernel enforce netshell --log <file>` writes one JSON object per line, and
+the engine's `cau ps --kernel-events` reads them. Each line says:
+
+| Field | What it is |
+|---|---|
+| `pid` | the process (thread-group) id, as an operator looks it up in `/proc` |
+| `tid` | the thread that called `execve` |
+| `tgid` | the process id under the name older readers expect — the same number as `pid` |
+| `uid`, `reason`, `denied`, `peer`, `comm`, `exe` | who ran what, from where |
+| `start_ticks` | the process's start time in USER_HZ ticks: the same clock and unit as field 22 of `/proc/<pid>/stat` |
+| `time` | when the guard read the event (UTC) |
+
+`start_ticks` is what makes an event an attribution rather than a
+coincidence: a PID is reused and the log outlives the processes it names, so
+an event that says which process it happened to can be matched to that one and
+to no other. The kernel derives the number from the same value `/proc` uses,
+and `make vm-test` proves on a real kernel that the event's start time equals
+the live process's own `starttime` field. A guard that cannot read it (a
+kernel without the field) writes the event without it, and the engine treats
+such an event as context about the PID rather than as evidence.
+
 ## What it reads
 
 | Area | Signals |
@@ -91,7 +121,10 @@ is unavailable.
 Everything degrades honestly: a node that needs more privilege than the caller
 has is recorded as a warning, never a silent gap. Signed baselines (Ed25519,
 key off the host) make drift detection tamper-resistant — an attacker who
-rewrites the baseline cannot forge its signature.
+rewrites the baseline cannot forge its signature. A **signed** baseline fails
+closed without its public key: `drift` refuses to compare against a baseline
+whose signature it cannot check, because an attacker who can rewrite the
+baseline can also rewrite what it says.
 
 ## Honest scope
 

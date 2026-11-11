@@ -35,6 +35,7 @@ type KillGuard struct {
 	coll    *ebpf.Collection
 	links   []link.Link
 	created bool
+	lock    *residentLock
 }
 
 // LoadKillGuard loads the CO-RE kill/ptrace object from objPath
@@ -69,16 +70,24 @@ func LoadKillGuard(objPath string) (*KillGuard, error) {
 	}
 	// Same one-resident rule as the enforcer's control map: EEXIST means
 	// another killguard owns the pinned set, and stealing it would let that
-	// guard's Close unlink the pin a live resident depends on.
-	if err := m.Pin(pidsMapPinPath()); err != nil {
+	// guard's Close unlink the pin a live resident depends on. A pin left
+	// behind by a killguard that was killed is stale, and the lock tells the
+	// two apart.
+	lock, err := takeResidentLock("killguard")
+	if err != nil {
 		coll.Close()
+		return nil, err
+	}
+	if err := pinChannel(m, pidsMapPinPath(), lock); err != nil {
+		coll.Close()
+		lock.release()
 		if pinTaken(err) {
 			return nil, residentBusyError("killguard", "protected-PID map", pidsMapPinPath())
 		}
 		return nil, fmt.Errorf("enforce: pin protected-PID map: %w", err)
 	}
 
-	g := &KillGuard{coll: coll, created: true}
+	g := &KillGuard{coll: coll, created: true, lock: lock}
 	for _, name := range []string{killProgKill, killProgPtrace} {
 		p, ok := coll.Programs[name]
 		if !ok {
@@ -113,6 +122,7 @@ func (g *KillGuard) teardown() {
 	if g.coll != nil {
 		g.coll.Close()
 	}
+	g.lock.release()
 }
 
 // Wait blocks until ctx is done (the resident loop).

@@ -56,6 +56,21 @@ static long (*bpf_ringbuf_output)(void *rb, void *data, __u64 size, __u64 flags)
 #define AF_INET6 10
 #define TCP_ESTABLISHED 1
 
+// USER_HZ is the kernel's user-visible clock rate: the unit /proc/<pid>/stat's
+// starttime field counts in. The kernel fixes it at 100 on every architecture
+// that still ships, and it derives that field with
+//
+//	start_time = nsec_to_clock_t(timens_add_boottime_ns(task->start_boottime))
+//
+// which is the start time in nanoseconds divided by this. A reader on the
+// other side (cau ps --kernel-events) compares the number against the live
+// process's own starttime field, so the two must be the same unit. If this
+// constant were ever wrong the comparison would simply never match, and the
+// event would fall back to being context rather than evidence: it fails safe.
+// The same is true of a process in a time namespace with a boot-time offset,
+// which /proc adds and this does not.
+#define NSEC_PER_USER_HZ 10000000ULL
+
 // Field reads go through bpf_probe_read_kernel: the walk crosses an array of
 // pointers (the fd table), which the verifier will not follow by BTF.
 #define RD(dst, src) bpf_probe_read_kernel(&(dst), sizeof(dst), __builtin_preserve_access_index(&(src)))
@@ -72,7 +87,11 @@ struct file {
 struct linux_binprm { struct file *file; } __core;
 struct fdtable { struct file **fd; unsigned int max_fds; } __core;
 struct files_struct { struct fdtable *fdt; } __core;
-struct task_struct { struct files_struct *files; } __core;
+// task_struct::start_boottime is the process's start time in boot-based
+// nanoseconds ("Boot based time in nsecs" in the kernel's own comment). It has
+// been a u64 since Linux 5.5, and BPF-LSM needs 5.7, so every kernel that can
+// run this program has it in this shape.
+struct task_struct { struct files_struct *files; __u64 start_boottime; } __core;
 struct in6_addr { __u8 s6_addr[16]; } __core;
 struct sock_common {
 	unsigned short skc_family;
@@ -113,8 +132,8 @@ struct {
 
 // Mirrored by Event in internal/enforce/common.go.
 struct event {
-	__u32 pid;
-	__u32 tgid;
+	__u32 pid;        // the process (thread-group) id, as userspace names it
+	__u32 tid;        // the thread that called execve
 	__u32 uid;
 	__u32 reason;
 	__u32 denied;
@@ -123,6 +142,12 @@ struct event {
 	__u8 daddr[16];
 	char comm[16];
 	char exe[16];
+	// The process's start time in USER_HZ ticks, the same unit and the
+	// same clock as field 22 of /proc/<pid>/stat. A PID alone is not an
+	// identity: the log outlives processes and PIDs are reused, so an
+	// event that says which process it happened to can be matched to that
+	// one and to no other.
+	__u64 start_ticks;
 };
 
 // inet_peer fills e when file f is a socket with an established inet peer.
@@ -164,15 +189,42 @@ static __always_inline int inet_peer(struct file *f, struct event *e)
 	return 1;
 }
 
+// start_ticks returns the current task's start time in USER_HZ ticks, the
+// unit /proc/<pid>/stat's starttime field uses. The kernel derives that field
+// from the same value this reads:
+//
+//	start_time = nsec_to_clock_t(timens_add_boottime_ns(task->start_boottime))
+//
+// A failed read leaves it zero, which is the one value no process has: an
+// event that cannot say which process it happened to is context, not evidence.
+static __always_inline __u64 start_ticks(void)
+{
+	struct task_struct *task = (void *)bpf_get_current_task();
+	__u64 ns = 0;
+
+	if (!task)
+		return 0;
+	RD(ns, task->start_boottime);
+	if (ns == 0)
+		return 0;
+	return ns / NSEC_PER_USER_HZ;
+}
+
 static __always_inline void emit(struct event *e, __u32 reason, int denied)
 {
 	__u64 id = bpf_get_current_pid_tgid();
 
-	e->pid = (__u32)id;
-	e->tgid = (__u32)(id >> 32);
+	// The high half of the helper's result is the thread-group id (the
+	// process as userspace names it) and the low half the thread that called
+	// execve. A process with threads has one of the former and many of the
+	// latter, so they are reported separately: "pid" is what an operator
+	// looks up in /proc, "tid" is who did it.
+	e->pid = (__u32)(id >> 32);
+	e->tid = (__u32)id;
 	e->uid = (__u32)bpf_get_current_uid_gid();
 	e->reason = reason;
 	e->denied = denied;
+	e->start_ticks = start_ticks();
 	bpf_get_current_comm(e->comm, sizeof(e->comm));
 	bpf_ringbuf_output(&cau_events, e, sizeof(*e), 0);
 }
@@ -227,6 +279,9 @@ int cau_netshell_guard(unsigned long long *ctx)
 	}
 
 	if (bpf_map_lookup_elem(&cau_interpreters, &key)) {
+		// An interpreter follows the interpreter policy. When that policy
+		// is off the any-program policy still applies, so "off" for the
+		// interpreter rule is not "no rule": it is "not this rule".
 		mode = netshell != MODE_OFF ? netshell : any;
 		reason = REASON_NETSHELL;
 	} else {

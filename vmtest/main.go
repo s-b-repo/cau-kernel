@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -142,11 +143,74 @@ func guarded(cfg enforce.NetshellConfig, fn func(r *recorder)) {
 	r := &recorder{}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { _ = g.Events(ctx, r.add); close(done) }()
+	go func() { _ = g.Events(ctx, r.add, nil); close(done) }()
 	fn(r)
 	cancel()
 	<-done
 	_ = g.Close()
+}
+
+// startTicks reads field 22 of /proc/<pid>/stat: the process's start time in
+// USER_HZ ticks, counted after the ')' that ends the comm field.
+func startTicks(pid int) (uint64, error) {
+	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, err
+	}
+	i := strings.LastIndexByte(string(b), ')')
+	if i < 0 {
+		return 0, fmt.Errorf("no comm terminator in stat line")
+	}
+	f := strings.Fields(string(b[i+1:]))
+	const startTimeField = 19 // field 22 of the line; state, field 3, is index 0 here
+	if len(f) <= startTimeField {
+		return 0, fmt.Errorf("short stat line: %d fields", len(f))
+	}
+	n, err := strconv.ParseUint(f[startTimeField], 10, 64)
+	return n, err
+}
+
+// identity proves the event says which process it happened to. The start time
+// the guard records must be the number the live process's own /proc/<pid>/stat
+// reports, in the same unit: that equality is the whole contract with
+// `cau ps --kernel-events`, which matches an event to a process on it.
+func identity(sock *os.File) {
+	body, _ := os.ReadFile("/bin/plain")
+	_ = os.MkdirAll("/tmp/ident", 0o755)
+	if err := os.WriteFile("/tmp/ident/sleeper", body, 0o755); err != nil {
+		check("identity: setup", false, err.Error())
+		return
+	}
+	g, err := enforce.LoadNetshell(enforce.NetshellConfig{AnyProgram: enforce.ModeAudit})
+	if err != nil {
+		check("identity: load guard", false, err.Error())
+		return
+	}
+	defer g.Close()
+	r := &recorder{}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = g.Events(ctx, r.add, nil); close(done) }()
+
+	cmd := exec.Command("/tmp/ident/sleeper")
+	cmd.Stdin, cmd.Stdout = sock, sock
+	if err := cmd.Start(); err != nil {
+		check("identity: start", false, err.Error())
+		cancel()
+		<-done
+		return
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	e, ok := r.wait(enforce.ReasonNetStdio)
+	cancel()
+	<-done
+
+	ticks, terr := startTicks(cmd.Process.Pid)
+	check("identity: the event names the process it saw", ok && e.PID == uint32(cmd.Process.Pid) && e.TID == uint32(cmd.Process.Pid),
+		fmt.Sprintf("%+v pid=%d", e, cmd.Process.Pid))
+	check("identity: the start time matches the live process", ok && terr == nil && e.StartTicks == ticks,
+		fmt.Sprintf("event=%d live=%d err=%v", e.StartTicks, ticks, terr))
+	check("identity: the event carries a time", ok && !e.Time.IsZero(), fmt.Sprintf("%v", e.Time))
 }
 
 func memfdExe() (string, func(), error) {
@@ -237,6 +301,7 @@ func scenarios() {
 
 	check("fail-open: detached guard leaves shell on TCP running", run("/bin/sh", sock, sock) == nil, "")
 
+	identity(sock)
 	eventLog(sock)
 	blocklist()
 	killGuard()

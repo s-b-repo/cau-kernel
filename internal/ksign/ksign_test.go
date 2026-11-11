@@ -73,6 +73,35 @@ func TestWrongKeyAndRequiredButUnsigned(t *testing.T) {
 	}
 }
 
+// A signed baseline whose signature cannot be checked is refused, not read.
+//
+// The caller that cannot check the signature is the one who cannot tell a
+// genuine baseline from one an attacker rewrote: an attacker with write access
+// to the baseline file rewrites the payload too, and a run that then reports
+// "no drift" is reporting what the attacker wanted it to report.
+func TestASignedBaselineWithoutAKeyIsRefused(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	env, _ := Wrap(doc{"y", 2}, priv)
+	var got doc
+	if err := env.Open(&got, nil); !errors.Is(err, ErrBadSignature) {
+		t.Errorf("a signed baseline was read without its key: %v", err)
+	}
+	// An unsigned baseline is still readable without a key: there is
+	// nothing to check.
+	unsigned, _ := Wrap(doc{"z", 3}, nil)
+	if err := unsigned.Open(&got, nil); err != nil {
+		t.Errorf("an unsigned baseline was refused: %v", err)
+	}
+}
+
+// A key of the wrong length is an error, not a panic: ed25519.Sign panics on
+// one, and Wrap is exported.
+func TestWrapRefusesAMalformedPrivateKey(t *testing.T) {
+	if _, err := Wrap(doc{"y", 2}, ed25519.PrivateKey("too short")); err == nil {
+		t.Fatal("a malformed private key was accepted")
+	}
+}
+
 // TestSignedSurvivesMarshalRoundTrip guards the subtle failure where indented
 // serialization re-serializes the signed RawMessage payload and breaks the
 // signature. Persisting via Marshal/Unmarshal must preserve verification.

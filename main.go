@@ -223,13 +223,19 @@ func cmdDrift(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 	var base kstate.Snapshot
+	if pub == nil && env.Signature != "" {
+		// The baseline is signed and the signature cannot be checked. An
+		// attacker who can rewrite the baseline can also rewrite what it
+		// says, so a run that reported "no drift" here would be reporting
+		// what the attacker wanted it to report.
+		return failf(stderr, exitFinding,
+			"the baseline is signed but no --pubkey was given, so its signature cannot be checked; pass the public key that signed it")
+	}
 	if err := env.Open(&base, pub); err != nil {
 		return failf(stderr, exitFinding, "baseline: %v", err) // a bad signature is a finding
 	}
 	if pub != nil {
 		fmt.Fprintln(stdout, "[*] baseline signature verified")
-	} else if env.Signature != "" {
-		fmt.Fprintln(stderr, "[WARN] baseline is signed but no --pubkey given; signature not checked")
 	}
 
 	cur := kstate.Collector{Root: *root}.Collect()

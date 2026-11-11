@@ -48,6 +48,24 @@ func TestDiffQuietWhenUnchanged(t *testing.T) {
 	}
 }
 
+// A kernel-memory channel that is still there but is now readable by more
+// than it was is a new way into the kernel. The mode was collected for exactly
+// this and nothing compared it.
+func TestDiffFlagsAMemoryChannelThatChangedMode(t *testing.T) {
+	base := Snapshot{MemChannels: []MemChannel{{Path: "/dev/mem", Present: true, Mode: "crw-rw----"}}}
+	cur := Snapshot{MemChannels: []MemChannel{{Path: "/dev/mem", Present: true, Mode: "crw-rw-rw-"}}}
+	alerts := Alerts(Diff(base, cur))
+	found := false
+	for _, c := range alerts {
+		if c.Kind == "mem-channel-mode" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("a world-writable /dev/mem was not reported: %+v", alerts)
+	}
+}
+
 func TestDiffRemovalIsInfoNotAlert(t *testing.T) {
 	base := Snapshot{Modules: []Module{{Name: "a"}, {Name: "b"}}}
 	cur := Snapshot{Modules: []Module{{Name: "a"}}}

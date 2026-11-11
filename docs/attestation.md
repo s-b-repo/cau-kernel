@@ -45,7 +45,10 @@ cau-kernel attest verify   --baseline a.json --pubkey pub.hex
   (`alert` for a security-relevant input: the TPM, the IMA counters, the kdump
   state) — the check is now running blind on that input, or
 - the baseline is signed and the signature does not verify against `--pubkey`
-  (fail-closed).
+  (fail-closed), or
+- the baseline is signed and **no** `--pubkey` was given, so its signature
+  cannot be checked (fail-closed as well: an unverified baseline cannot say
+  the boot chain is the one that was measured).
 
 The IMA log is append-only, so its digest changing as new files are measured is
 reported at `info` (shown with `--all`), not as an alert.
