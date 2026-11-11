@@ -136,6 +136,10 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
+          # The latest patch of the version go.mod names, not that exact
+          # version: go.mod states the minimum, but the build should carry
+          # the fixed standard library.
+          check-latest: true
           cache: true
 
       - name: Install clang + binutils
@@ -168,12 +172,12 @@ jobs:
           # pinned by a checksum.
           stage=$(mktemp -d)
           trap 'rm -rf "$stage"' EXIT
-          git ls-files -z --cached --others --exclude-standard --deduplicate -- . \
-            ':(exclude).github' | while IFS= read -r -d '' f; do
-            if [ -f "$f" ] || [ -L "$f" ]; then printf '%s\0' "$f"; fi
-          done | tar --null -T - -cf - | tar -xf - -C "$stage"
-          tar --sort=name --mtime='UTC 2020-01-01' --owner=0 --group=0 --numeric-owner \
-            -czf "dist/cau-kernel-$version.tar.gz" -C "$stage" .
+          git archive --format=tar --prefix="cau-kernel-${version}/" HEAD -- . \
+            ':(exclude).github' > "$stage/source.tar"
+          tar -xf "$stage/source.tar" -C "$stage"
+          tar --sort=name --mtime='@1735689600' --owner=0 --group=0 \
+            --numeric-owner --format=gnu -C "$stage" -cf "$stage/normalized.tar" "cau-kernel-${version}"
+          gzip -9n < "$stage/normalized.tar" > "dist/cau-kernel-$version.tar.gz"
           ls -l dist/
 
       - name: The manifest

@@ -45,6 +45,10 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
+          # The latest patch of the version go.mod names, not that exact
+          # version: go.mod states the minimum, but the build should carry
+          # the fixed standard library.
+          check-latest: true
           cache: true
 
       - name: Install govulncheck
