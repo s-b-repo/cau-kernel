@@ -169,6 +169,21 @@ name it has there (`cau-kernel/…`). `CAU_ENGINE` points at that checkout, and
 the target fails loudly when it is not where it says — a sweep that cannot run
 must never pass by not running.
 
+## Releases
+
+A `v*` tag publishes a main release, a later tag a patch release, and a push
+to the `beta` branch a pre-release named `<last version>-beta.<commits since
+the tag>`. The release workflow waits for this repository's CI run of the same
+commit first, and it publishes the binary, the BPF-LSM objects and the source
+archive together under one `SHA256SUMS`: an operator who installs the binary
+without the objects has a sensor that cannot enforce anything.
+
+The release is unsigned. This repository has no signed-manifest command of its
+own — the engine's `cau bundle checksums` signs with the engine's key, which
+is a different trust anchor — so the manifest is published beside the
+artifacts and the release notes say so. A download can be checked by hand; it
+cannot be checked by a pinned key yet.
+
 ## Documentation
 
 Full docs are in [`docs/`](docs/): [architecture](docs/architecture.md),
