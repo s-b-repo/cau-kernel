@@ -194,11 +194,26 @@ jobs:
             sort -z | xargs -0 sha256sum > SHA256SUMS)
           cat dist/SHA256SUMS
 
+      # The notes are the history's own account of the release: each commit's
+      # subject and the explanation it was made with.
+      - name: Render the release notes
+        run: |
+          set -euo pipefail
+          ./scripts/release-notes.sh "${{ needs.prepare.outputs.version }}" "$RUNNER_TEMP/release-notes.md"
+          if [ ! -s "$RUNNER_TEMP/release-notes.md" ]; then
+            echo "::error::the release notes are empty"
+            exit 1
+          fi
+          head -20 "$RUNNER_TEMP/release-notes.md"
+
       - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
         with:
           files: dist/*
           fail_on_unmatched_files: true
           tag_name: ${{ needs.prepare.outputs.tag }}
+          # The notes are written above, so GitHub's own are not needed: they
+          # would be a link to the comparison and nothing else.
+          body_path: ${{ runner.temp }}/release-notes.md
           prerelease: ${{ needs.prepare.outputs.prerelease }}
-          generate_release_notes: true
+          generate_release_notes: false
           target_commitish: ${{ github.sha }}
