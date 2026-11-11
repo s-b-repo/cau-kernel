@@ -1,0 +1,197 @@
+name: release
+
+# The release pipeline for the kernel sensor: a main release, a patch release
+# and a beta, from one workflow.
+#
+#   v1.2.0 (a tag)      a main release
+#   v1.2.1 (a tag)      a patch release — the same flow, a later tag
+#   1.3.0-beta.4        a beta, published from the `beta` branch
+#
+# The sensor is distributed as a binary and as the BPF-LSM objects it loads:
+# an operator who installs the binary without the matching object has a sensor
+# that cannot enforce anything, so the objects and the binary are released
+# together and covered by one manifest.
+#
+# The release is unsigned: this repository has no signed-manifest command of
+# its own (the engine's `cau bundle checksums` signs with the engine's key,
+# which is a different trust anchor). The SHA256SUMS is published beside the
+# artifacts so a download can be checked by hand, and the release notes say so.
+
+on:
+  push:
+    tags: ["v*"]
+    branches: ["beta"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "the version to publish, without the leading v (0.3.0, 0.3.0-rc1, ...)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: derive the version, wait for the gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - id: version
+        name: Work out which release this is
+        env:
+          # The dispatch input arrives through the environment, never pasted
+          # into the script: it is a shell word, and a version that carried
+          # one would be a command.
+          INPUT_VERSION: ${{ inputs.version }} # audit:ok the input arrives through the environment, never pasted into the script
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            version="$INPUT_VERSION"
+          elif [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            # The beta branch: the last release's version, plus the number of
+            # commits since it. The count is a function of the commit, so the
+            # same commit always publishes the same beta version.
+            last=$(git describe --tags --abbrev=0)
+            base="${last#v}"
+            n=$(git rev-list --count "$last"..HEAD)
+            version="${base}-beta.${n}"
+          fi
+          case "$version" in
+            ''|*[!0-9A-Za-z.+-]*)
+              echo "::error::invalid release version: $version"
+              exit 1
+              ;;
+          esac
+          prerelease=false
+          case "$version" in
+            *-*) prerelease=true ;;
+          esac
+          {
+            echo "version=$version"
+            echo "tag=v$version"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+          echo "releasing $version (prerelease=$prerelease)"
+
+      # A release is published from a tree whose gates passed. The gates live in
+      # the CI workflow, so this waits for that run the same way the engine's
+      # release waits for its packaging run: both workflows trigger on the same
+      # push, so the run exists by now, and the retry only absorbs a slow run
+      # creation.
+      - name: Wait for the CI gates of this commit
+        if: github.event_name != 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          run_id=""
+          for _ in 1 2 3 4 5 6 7 8; do
+            run_id=$(gh run list -w ci.yml -e push -c "$GITHUB_SHA" \
+              --branch "$GITHUB_REF_NAME" --limit 100 \
+              --json databaseId,createdAt \
+              --jq 'sort_by(.createdAt) | last | .databaseId // empty')
+            [ -n "$run_id" ] && break
+            sleep 15
+          done
+          if [ -z "$run_id" ]; then
+            echo "::error::no CI run for $GITHUB_SHA: the gates have not run against this commit"
+            exit 1
+          fi
+          echo "waiting for the CI run $run_id to finish"
+          if ! gh run watch "$run_id" --exit-status --interval 30; then
+            echo "::error::the CI run $run_id did not succeed: the gates are not green for this commit"
+            exit 1
+          fi
+
+  publish:
+    name: build and publish
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install clang + binutils
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang binutils
+
+      - name: Build the sensor and the BPF-LSM objects
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          version="$VERSION"
+          mkdir -p dist
+          # The default build: the sensor, everywhere.
+          go build -trimpath -ldflags "-s -w -X main.version=$version" -o "dist/cau-kernel-$version-linux-amd64" .
+          # The eBPF build: the same sensor with the loader and the BPF-LSM
+          # enforcement compiled in. It needs the objects, and an operator who
+          # installs the binary without them has a sensor that cannot enforce.
+          make bpf-object
+          go build -trimpath -tags ebpf -ldflags "-s -w -X main.version=$version" -o "dist/cau-kernel-$version-linux-amd64-ebpf" .
+          cp bpf/*.bpf.o dist/
+          ls -l dist/
+
+      - name: The source archive
+        run: |
+          set -euo pipefail
+          version="${{ needs.prepare.outputs.version }}"
+          # The same fixed-byte recipe the engine uses: git archive with a
+          # fixed mtime, sorted names, zeroed owner and group, gzip -n. A
+          # source archive whose bytes change between two fetches cannot be
+          # pinned by a checksum.
+          stage=$(mktemp -d)
+          trap 'rm -rf "$stage"' EXIT
+          git ls-files -z --cached --others --exclude-standard --deduplicate -- . \
+            ':(exclude).github' | while IFS= read -r -d '' f; do
+            if [ -f "$f" ] || [ -L "$f" ]; then printf '%s\0' "$f"; fi
+          done | tar --null -T - -cf - | tar -xf - -C "$stage"
+          tar --sort=name --mtime='UTC 2020-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "dist/cau-kernel-$version.tar.gz" -C "$stage" .
+          ls -l dist/
+
+      - name: The manifest
+        run: |
+          set -euo pipefail
+          # Every artifact the release offers, in one file, so a download can
+          # be checked by hand. The release is unsigned: this repository has no
+          # signed-manifest command of its own, and a manifest nobody can
+          # verify is worse than one that says what it is.
+          (cd dist && find . -maxdepth 1 -type f ! -name 'SHA256SUMS*' -print0 |
+            sort -z | xargs -0 sha256sum > SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          prerelease: ${{ needs.prepare.outputs.prerelease }}
+          generate_release_notes: true
+          target_commitish: ${{ github.sha }}

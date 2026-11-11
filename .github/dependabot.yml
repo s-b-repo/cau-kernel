@@ -1,0 +1,23 @@
+version: 2
+
+# The workflows pin their actions to immutable commit SHAs, and nothing in the
+# repository watches those pins, so a new major can land silently. Grouping
+# them into one pull request keeps a week of patch bumps from arriving as
+# three.
+#
+# The Go module ecosystem is deliberately absent: the module graph is small and
+# the cgo binding to libyara is pinned in go.mod, so a dependency bump is a
+# deliberate change rather than something a bot should open.
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    labels:
+      - ci
+    groups:
+      actions:
+        patterns:
+          - "*"

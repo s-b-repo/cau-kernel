@@ -1,21 +1,40 @@
 name: ci
 
+# The kernel sensor's own gates: the sensor builds everywhere, the eBPF build
+# builds where clang is, the CO-RE objects build where clang is, and the
+# kernel-module backend builds against generic headers.
+#
+# The VM proof (make vm-test) is not here: it needs a kernel image and a
+# hypervisor, and a hosted runner has neither. It is the strongest check the
+# project has, so it is run by hand, against the kernel that is actually
+# deployed, before a release.
+
 on:
   push:
-    branches: [main]
+    branches: [main, beta]
     tags: ["v*"]
   pull_request:
+  schedule:
+    # Weekly: the runner image moves, and a build that only ever ran on one
+    # image is a build nobody has checked against another.
+    - cron: "13 3 * * 3"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   go:
     name: build, vet, test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache: true
@@ -23,8 +42,15 @@ jobs:
         run: go vet ./...
       - name: gofmt
         run: |
-          out="$(gofmt -l $(find . -name '*.go'))"
+          out="$(gofmt -l "$(find . -name '*.go')")"
           if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
+      # A workflow GitHub rejects runs zero jobs, with no log to explain why:
+      # the run appears as an instant failure and nothing else. This checks
+      # the workflows before they are pushed, where the failure has a name.
+      - name: Validate the GitHub workflows and shell commands
+        run: |
+          docker run --rm -v "$PWD:/repo:ro" --workdir /repo \
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 -color
       - name: Test (race)
         run: go test -race ./...
       - name: Build
@@ -34,10 +60,11 @@ jobs:
 
   ebpf:
     name: build BPF-LSM object + eBPF loader
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
           cache: true
@@ -60,9 +87,10 @@ jobs:
 
   core-bpf:
     name: build CO-RE BPF-LSM variant
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install clang + binutils
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends clang binutils
       - name: Build and verify the CO-RE objects
@@ -77,9 +105,10 @@ jobs:
 
   kmod:
     name: build kernel-module backend
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install kernel build headers
         run: |
           sudo apt-get update
@@ -88,8 +117,58 @@ jobs:
         run: |
           # Build against the installed generic headers (a compile check that
           # does not depend on the runner's own running kernel).
-          KDIR="$(ls -d /usr/src/linux-headers-*-generic 2>/dev/null | sort -V | tail -1)"
+          KDIR="$(find /usr/src -maxdepth 1 -name 'linux-headers-*-generic' | sort -V | tail -1)"
           test -n "$KDIR" || { echo "no generic kernel headers found"; exit 1; }
           echo "Building against $KDIR"
           make -C kmod KDIR="$KDIR"
           test -f kmod/cau_guard.ko && echo "OK: cau_guard.ko built"
+
+  # The untrusted-input parsers are the sensor's attack surface: the baseline
+  # file, the /proc and /sys readers, the signed-baseline parser. The seed
+  # corpora run as unit tests in the race lane; this is coverage-guided
+  # mutation on top of them.
+  fuzz:
+    name: fuzz the untrusted-input parsers
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ github.event_name == 'schedule' && 30 || 15 }}
+    env:
+      FUZZTIME: ${{ github.event_name == 'schedule' && '2m' || '30s' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Coverage-guided hunt over every Fuzz* target
+        run: make fuzz FUZZTIME="$FUZZTIME"
+      - name: Publish the crasher it found
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: fuzz-crashers
+          path: |
+            **/testdata/fuzz/**
+
+  # The regex sweep for bug shapes is the engine's; the same tool covers this
+  # tree (the engine's checkout is the tool's home, and CAU_ENGINE points at
+  # it). It is a gate: a hit that is not in the baseline fails the run.
+  sweep:
+    name: the bug-shape sweep
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: s-b-repo/cau
+          path: engine
+
+      - name: Run the sweep over this tree
+        run: |
+          # The engine's checkout is the tool's home: one sweep and one
+          # baseline cover both trees, and the baseline records this tree's
+          # hits under the name it has there. The target fails loudly when the
+          # engine checkout is not where it says — a sweep that cannot run
+          # must never pass by not running.
+          make regex-audit CAU_ENGINE="$GITHUB_WORKSPACE/engine"

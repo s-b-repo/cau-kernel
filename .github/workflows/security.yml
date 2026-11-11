@@ -1,0 +1,104 @@
+name: security
+
+# The automated security lane for the kernel sensor.
+#
+# The sensor reads the kernel's state and, in its eBPF build, acts on it. Both
+# halves take input from the host: /proc and /sys files an attacker may write,
+# a baseline file an attacker may rewrite, a BPF object an attacker may
+# replace. The questions below are the ones a scanner can answer without a
+# human reading the code:
+#
+#   govulncheck       does this code reach the vulnerable code? A dependency
+#                     with a known CVE that no call path reaches is not this
+#                     project's problem.
+#   CodeQL            what do the data flows look like? The path from a
+#                     hostile file to a privileged decision is the bug class a
+#                     reader misses.
+#   dependency review  does a pull request bring in a package with a known
+#                     vulnerability?
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "37 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  govulncheck:
+    name: vulnerable dependencies that this code reaches
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install govulncheck
+        run: |
+          # A pinned version, not @latest: the scanner is a build input here,
+          # and an input that moves on its own is an input nobody reviewed.
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          "$(go env GOPATH)/bin/govulncheck" -version
+
+      - name: Scan the module graph
+        run: |
+          set -o pipefail
+          "$(go env GOPATH)/bin/govulncheck" ./... 2>&1 | tee "$RUNNER_TEMP/govulncheck.txt"
+
+      - name: Publish the report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: govulncheck-report
+          path: ${{ runner.temp }}/govulncheck.txt
+          retention-days: 30
+
+  codeql:
+    name: code scanning (CodeQL)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      security-events: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Initialize the analysis
+        uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+        with:
+          languages: go
+
+      - name: Perform the analysis
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+        with:
+          category: "/language:go"
+
+  dependency-review:
+    name: the pull request's own dependencies
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Review the changed dependencies
+        uses: actions/dependency-review-action@cc4f6536e38d1126c5e3b0683d469a14f23bfea4 # v3
+        with:
+          fail-on-severity: high
