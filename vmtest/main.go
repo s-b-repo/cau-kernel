@@ -9,10 +9,12 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +22,7 @@ import (
 	"time"
 
 	"github.com/s-b-repo/cau-kernel/internal/enforce"
+	"github.com/s-b-repo/cau-kernel/internal/kstate"
 	"golang.org/x/sys/unix"
 )
 
@@ -40,12 +43,52 @@ func mounts() {
 	for _, m := range []struct{ src, dst, fs string }{
 		{"proc", "/proc", "proc"}, {"sys", "/sys", "sysfs"}, {"dev", "/dev", "devtmpfs"},
 		{"bpf", "/sys/fs/bpf", "bpf"}, {"sec", "/sys/kernel/security", "securityfs"},
+		{"debugfs", "/sys/kernel/debug", "debugfs"}, {"tracefs", "/sys/kernel/tracing", "tracefs"},
 	} {
 		_ = os.MkdirAll(m.dst, 0o755)
 		if err := syscall.Mount(m.src, m.dst, m.fs, 0, ""); err != nil && err != syscall.EBUSY {
 			fmt.Printf("VMTEST mount %s: %v\n", m.dst, err)
 		}
 	}
+}
+
+func hookInventory() {
+	snapshot := (kstate.Collector{Root: "/"}).Collect()
+	for _, table := range snapshot.Hooks {
+		switch table.Kind {
+		case kstate.BPFProgramTable, kstate.BPFLinkTable:
+			check("inventory: "+table.Kind+" reads live objects", table.State == kstate.HookReadable, table.Issue)
+			continue
+		case "lsm":
+			check("inventory: ordered LSM table includes bpf", table.State == kstate.HookReadable && slices.Contains(table.Entries, "bpf"), table.Issue)
+			continue
+		}
+		// The kernel configuration determines which optional views exist.
+		// Check the actual state for a present source and require an explicit
+		// unavailable status when the source is absent.
+		_, err := os.Stat(table.Source)
+		if err == nil {
+			check("inventory: "+table.Kind+" reads the kernel source", table.State == kstate.HookReadable, table.Issue)
+		} else {
+			check("inventory: "+table.Kind+" reports unavailable coverage", table.State == kstate.HookUnavailable && table.Issue != "", table.Issue)
+		}
+	}
+	check("inventory: all hook views report coverage", len(snapshot.Hooks) == 6, "")
+}
+
+func checkBPFDrift(before, after kstate.Snapshot) {
+	added := make(map[string]bool)
+	for _, c := range kstate.Diff(before, after) {
+		if c.Kind != "hook-added" || c.Severity != "alert" {
+			continue
+		}
+		kind, _, _ := strings.Cut(c.Detail, " ")
+		if kind == kstate.BPFProgramTable || kind == kstate.BPFLinkTable {
+			added[kind] = true
+		}
+	}
+	want := map[string]bool{kstate.BPFProgramTable: true, kstate.BPFLinkTable: true}
+	check("inventory: unpinned guard objects cause program and link drift", maps.Equal(added, want), fmt.Sprint(added))
 }
 
 func loopbackUp() error {
@@ -306,11 +349,14 @@ func scenarios() {
 	blocklist()
 	killGuard()
 
+	collector := kstate.Collector{Root: "/"}
+	before := collector.Collect()
 	g, err := enforce.Load("")
 	if err != nil {
 		check("load execution-freeze guard", false, err.Error())
 		return
 	}
+	checkBPFDrift(before, collector.Collect())
 	check("freeze: allow state runs", run("/bin/plain", pipeR, pipeW) == nil, "")
 	if err := enforce.SetPinned(true); err != nil {
 		check("freeze: set", false, err.Error())
@@ -524,6 +570,7 @@ func main() {
 		}
 	}()
 	mounts()
+	hookInventory()
 	if err := loopbackUp(); err != nil {
 		check("bring up lo", false, err.Error())
 		return

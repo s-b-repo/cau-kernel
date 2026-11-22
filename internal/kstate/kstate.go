@@ -1,7 +1,7 @@
 // Package kstate reads Linux kernel state relevant to tamper and rootkit
 // detection — loaded modules and taint, the eBPF surface, kernel-memory access
-// channels, and hardening posture — entirely from /proc and /sys. It is the
-// detection half of the cau-kernel sensor: observe and report, never modify.
+// channels, and hardening posture. It reads procfs, sysfs, and, in eBPF builds,
+// the kernel's live object inventory. It observes and reports kernel state.
 //
 // Every reader takes a configurable Root so the collector can run against a
 // fixture tree in tests and against "/" in production. A file that needs more
@@ -55,6 +55,7 @@ type Snapshot struct {
 	ModuleDirs  []string     `json:"module_dirs"` // names under /sys/module (cross-view)
 	Taint       TaintState   `json:"taint"`
 	BPF         BPFSurface   `json:"bpf"`
+	Hooks       []HookTable  `json:"hooks,omitempty"`
 	MemChannels []MemChannel `json:"mem_channels"`
 	Posture     Posture      `json:"posture"`
 	Hidden      []string     `json:"hidden_module_suspects,omitempty"`
@@ -104,6 +105,7 @@ type MemChannel struct {
 type Posture struct {
 	Lockdown     string            `json:"lockdown,omitempty"` // none|integrity|confidentiality
 	LSM          []string          `json:"lsm,omitempty"`
+	LSMState     string            `json:"lsm_state,omitempty"`
 	IMA          bool              `json:"ima_present"`
 	Sysctls      map[string]string `json:"sysctls,omitempty"`
 	Observations []PostureNote     `json:"observations,omitempty"`
@@ -144,8 +146,19 @@ func (c Collector) Collect() Snapshot {
 	s.Taint = c.taint(&s.Warnings)
 	s.BPF = c.bpf(&s.Warnings)
 	s.MemChannels = c.memChannels()
-	s.Posture = c.posture(&s.Warnings)
+	lsm := c.lsmHooks()
+	s.Posture = c.posture(&s.Warnings, lsm)
+	s.Hooks = c.hooks(lsm)
+	if filepath.Clean(c.root()) == "/" {
+		s.Hooks = append(s.Hooks, liveBPFTables()...)
+	}
 	return s
+}
+
+// CollectPosture reads just the inputs rendered by the posture command.
+func (c Collector) CollectPosture() Posture {
+	var warnings []string
+	return c.posture(&warnings, c.lsmHooks())
 }
 
 // ── modules + taint ──────────────────────────────────────────────────────────

@@ -117,6 +117,8 @@ such an event as context about the PID rather than as evidence.
 | eBPF surface | bpffs mounts, pinned maps/programs, JIT-harden and `unprivileged_bpf_disabled` sysctls |
 | Kernel memory | presence + mode of `/dev/mem`, `/dev/kmem`, `/dev/port`, `/proc/kcore`; lockdown |
 | Posture | `kptr_restrict`, `dmesg_restrict`, `kexec_load_disabled`, `modules_disabled`, `unprivileged_bpf_disabled`, `bpf_jit_harden`, `ptrace_scope`, `perf_event_paranoid`; lockdown mode; LSM list; IMA presence |
+| Hook registrations | Kprobe list, active ftrace callbacks, livepatch state and ordered LSM list with per-source coverage |
+| Module signatures | Runtime `module.sig_enforce` posture with an explicit unknown state |
 
 Everything degrades honestly: a node that needs more privilege than the caller
 has is recorded as a warning, never a silent gap. Signed baselines (Ed25519,

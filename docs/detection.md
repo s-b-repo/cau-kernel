@@ -1,8 +1,8 @@
 # Detection
 
-The default binary reads kernel state read-only and reports it, or diffs it
-against a signed baseline. All commands take `--root` (default `/`) so they can
-run against a fixture tree, and `--format text|json`.
+The default binary reads kernel state and reports it, or diffs it against a
+signed baseline. Detection commands take `--root` (default `/`) to support
+fixture trees. Inventory and posture also take `--format text|json`.
 
 ## `cau-kernel inventory`
 
@@ -19,6 +19,21 @@ A full snapshot:
   decode table is still reported (`taint-bit-<n>`) instead of being dropped.
 - **eBPF surface** — bpffs mounts (`/proc/mounts`), pinned maps/programs under
   `/sys/fs/bpf`, and the `bpf_jit_harden` / `unprivileged_bpf_disabled` sysctls.
+  Linux builds with the `ebpf` tag also inventory loaded programs and
+  links on the live host. Program type and kernel bytecode tag identify
+  programs, and link type and available attach type identify relationships
+  to those programs. The comparison preserves duplicate counts without
+  relying on boot-specific IDs. Permission errors and incomplete tables
+  appear as coverage loss against a readable baseline.
+  [Linux BPF object inventory](https://docs.kernel.org/userspace-api/ebpf/syscall.html)
+- **Kernel hook registrations** — kprobe registrations, active ftrace callback
+  records, livepatch enabled and transition state, and the ordered active LSM
+  list. Text shows source and coverage. JSON includes the observed records.
+  Absolute hook addresses are omitted from comparison.
+  [Kprobes](https://docs.kernel.org/trace/kprobes.html),
+  [ftrace](https://docs.kernel.org/trace/ftrace.html),
+  [livepatch](https://docs.kernel.org/livepatch/livepatch.html),
+  [LSM](https://docs.kernel.org/admin-guide/LSM/index.html).
 - **Kernel-memory channels** — presence and mode of `/dev/mem`, `/dev/kmem`,
   `/dev/port`, `/proc/kcore`, and lockdown.
 - **Posture** — the hardening sysctls (below), lockdown mode, the active LSM list
@@ -26,8 +41,8 @@ A full snapshot:
 
 ## `cau-kernel posture`
 
-Just the hardening posture, each knob marked `ok` or `weak` with the reason it
-matters. It reports **state, not scolding**: the operator owns the policy call.
+Each observed setting is marked `ok` or `weak` with the reason it matters.
+Unmeasured or malformed settings are marked `unknown`.
 
 | sysctl | hardened | why |
 |---|---|---|
@@ -39,6 +54,7 @@ matters. It reports **state, not scolding**: the operator owns the policy call.
 | `net.core.bpf_jit_harden` | ≥1 | BPF JIT-spray hardening |
 | `kernel.yama.ptrace_scope` | ≥1 | cross-process ptrace (credential theft) |
 | `kernel.perf_event_paranoid` | ≥2 | `perf_event_open` exposure |
+| `module.sig_enforce` | enabled | signature enforcement reported by `/sys/module/module/parameters/sig_enforce` |
 
 ## `cau-kernel baseline` / `drift`
 
@@ -55,12 +71,17 @@ cau-kernel drift    --baseline /var/lib/cau-kernel/base.json --pubkey pub.hex
 |---|---|
 | `module-added` | a module loaded since the baseline |
 | `module-changed` | the **same** module name, different size or load address — an unload/reload or a DKMS rebuild under the old name |
+| `module-taints-changed` | a loaded module's kernel-reported taint flags changed, including the unsigned-module flag `E` |
 | `taint-added` | a new taint flag |
 | `taint-removed` / `taint-cleared` | a taint flag (or a security taint bit) **disappeared** — root zeroing `/proc/sys/kernel/tainted` after loading an unsigned module |
 | `mem-channel` | a kernel-memory channel appeared |
 | `mem-channel-mode` | a kernel-memory channel is still there but its mode changed — a `/dev/mem` that became world-writable is a new way into the kernel |
 | `bpf-pinned` | a new pinned eBPF object |
+| `hook-added` / `hook-removed` | a registration record appeared or disappeared, including changed callback counts and livepatch state |
+| `hook-order-changed` | the order of the active LSM list changed |
+| `hook-coverage` | a previously readable source became partial or unavailable |
 | `hardening-regression` | a hardening knob weakened: `ok`→`weak`, a knob that was **unreadable** at baseline and is weak now, or a knob that changed while already weak |
+| `hardening-unreadable` | an observed hardening setting became unknown |
 | `input-unreadable` | a monitored input (`/proc/modules`, `/sys/module`, `/proc/mounts`, the taint word, the bpffs root) became unreadable — the detector is now blind there |
 | `hidden-module` | in `/sys/module` but not in `/proc/modules` |
 
@@ -81,9 +102,17 @@ attestation baseline (or the other way round) even when both were signed with
 the same key. Opening a baseline of the wrong kind fails before any signature
 work.
 
+Older signed baselines remain valid. Hook drift requires readable records in
+both snapshots. Drift prints an informational coverage message for each source
+missing from an older baseline or unreadable when it was recorded.
+
 ## Honest limits
 
 - A fully compromised kernel can lie to `/proc`/`/sys`; cross-view and the TPM/IMA
   anchors ([attestation](attestation.md)) are the hedge, not a guarantee.
-- kprobe/IMA nodes under securityfs usually need root; unreadable nodes become
-  warnings, so an unprivileged run reports less, never falsely "clean".
+- The hook inventory reads the debugfs kprobe list, the tracefs
+  `enabled_functions` table (with a legacy debugfs fallback), the sysfs
+  livepatch directory, and the securityfs LSM list. Missing, unreadable or
+  malformed inputs have explicit coverage states. Hook data is a snapshot
+  of those sources. Unpinned eBPF programs, standalone BPF links and changes
+  between snapshots are outside this collection.

@@ -179,6 +179,16 @@ func TestDiffModuleAddressOnlyChangeIsAlert(t *testing.T) {
 	}
 }
 
+func TestDiffTracksModuleTaints(t *testing.T) {
+	old := Snapshot{Modules: []Module{{Name: "driver", Taints: "(O)"}}}
+	current := Snapshot{Modules: []Module{{Name: "driver", Taints: "(OE)"}}}
+	for _, change := range [][]Change{Diff(old, current), Diff(current, old)} {
+		if got := Alerts(change); len(got) != 1 || got[0].Kind != "module-taints-changed" {
+			t.Fatalf("module signature taint change not reported: %+v", got)
+		}
+	}
+}
+
 func TestDiffModuleRefcountChurnIsInfoNotAlert(t *testing.T) {
 	base := Snapshot{Modules: []Module{{Name: "kmod", Size: 16384, RefCount: 1, UsedBy: []string{"a"}, Address: "0x1"}}}
 	cur := Snapshot{Modules: []Module{{Name: "kmod", Size: 16384, RefCount: 2, UsedBy: []string{"a", "b"}, Address: "0x1"}}}

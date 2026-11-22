@@ -1,6 +1,7 @@
 package kstate
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
@@ -63,6 +64,10 @@ func Diff(baseline, current Snapshot) []Change {
 					itoa(b.Size) + " -> " + itoa(m.Size) + ", address " +
 					orNone(b.Address) + " -> " + orNone(m.Address) + ")", "alert"})
 		}
+		if b.Taints != m.Taints {
+			ch = append(ch, Change{"module-taints-changed",
+				fmt.Sprintf("module %q taints changed since baseline (%q -> %q)", name, b.Taints, m.Taints), "alert"})
+		}
 		if !sameStringSet(b.UsedBy, m.UsedBy) {
 			ch = append(ch, Change{"module-refs-changed",
 				"module " + name + " used-by list changed since baseline", "info"})
@@ -111,13 +116,17 @@ func Diff(baseline, current Snapshot) []Change {
 	}
 
 	ch = append(ch, diffPosture(baseline, current)...)
+	ch = append(ch, diffHooks(baseline.Hooks, current.Hooks)...)
 	ch = append(ch, diffWarnings(baseline, current)...)
 
 	sort.SliceStable(ch, func(i, j int) bool {
 		if ch[i].Severity != ch[j].Severity {
 			return ch[i].Severity == "alert" // alerts first
 		}
-		return ch[i].Kind < ch[j].Kind
+		if ch[i].Kind != ch[j].Kind {
+			return ch[i].Kind < ch[j].Kind
+		}
+		return ch[i].Detail < ch[j].Detail
 	})
 	return ch
 }
@@ -187,10 +196,13 @@ func diffPosture(baseline, current Snapshot) []Change {
 		baseValue[o.Key] = o.Value
 	}
 	for _, o := range current.Posture.Observations {
-		if o.Level != "weak" {
-			continue // only a weak posture is a finding; "ok"/"unknown" is not drift
-		}
 		was, known := baseLevel[o.Key]
+		if o.Level == "unknown" && (was == "ok" || was == "weak") {
+			ch = append(ch, Change{"hardening-unreadable", o.Key + " could no longer be measured", "alert"})
+		}
+		if o.Level != "weak" {
+			continue
+		}
 		switch {
 		case !known || was == "" || was == "unknown":
 			// The knob was absent or unreadable at baseline: it is weak now

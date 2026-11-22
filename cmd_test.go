@@ -84,6 +84,34 @@ func TestCLIBaselineDriftLifecycle(t *testing.T) {
 	}
 }
 
+func TestCLIKernelHookCoverage(t *testing.T) {
+	root := fixtureRoot(t)
+	b := filepath.Join(t.TempDir(), "base.json")
+	if code, _, e := runCLI(t, "baseline", "--root", root, "--out", b); code != exitOK {
+		t.Fatalf("baseline: code=%d err=%s", code, e)
+	}
+	if code, out, _ := runCLI(t, "inventory", "--root", root, "--format", "json"); code != exitOK ||
+		!strings.Contains(out, `"hooks"`) || !strings.Contains(out, `"state": "unavailable"`) {
+		t.Fatalf("hook inventory: code=%d out=%q", code, out)
+	}
+	if code, out, _ := runCLI(t, "posture", "--root", root); code != exitOK ||
+		!strings.Contains(out, "[unknown] module.sig_enforce") {
+		t.Fatalf("missing signature enforcement state: code=%d out=%q", code, out)
+	}
+	if code, out, _ := runCLI(t, "drift", "--root", root, "--baseline", b); code != exitOK ||
+		!strings.Contains(out, "ftrace table could not be compared") {
+		t.Fatalf("insufficient coverage is invisible: code=%d out=%q", code, out)
+	}
+	lsm := filepath.Join(root, "sys/kernel/security/lsm")
+	if err := os.WriteFile(lsm, []byte("lockdown,capability\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out, _ := runCLI(t, "drift", "--root", root, "--baseline", b); code != exitFinding ||
+		!strings.Contains(out, "hook-removed") {
+		t.Fatalf("LSM registration loss not reported: code=%d out=%q", code, out)
+	}
+}
+
 func TestCLIAttestLifecycle(t *testing.T) {
 	root := fixtureRoot(t)
 	a := filepath.Join(t.TempDir(), "attest.json")

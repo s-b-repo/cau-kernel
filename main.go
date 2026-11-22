@@ -127,20 +127,16 @@ func cmdPosture(args []string, stdout, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-	p := kstate.Collector{Root: *root}.Collect().Posture
+	p := kstate.Collector{Root: *root}.CollectPosture()
 	if *format == "json" {
 		if err := writeJSON(stdout, p); err != nil {
 			return failf(stderr, exitFailed, "%v", err)
 		}
 		return exitOK
 	}
-	fmt.Fprintf(stdout, "Lockdown: %s\nLSM: %v\nIMA present: %v\n\n", orDash(p.Lockdown), p.LSM, p.IMA)
+	fmt.Fprintf(stdout, "Lockdown: %s\nLSM: %v (%s)\nIMA present: %v\n\n", orDash(p.Lockdown), p.LSM, p.LSMState, p.IMA)
 	for _, o := range p.Observations {
-		mark := "ok "
-		if o.Level == "weak" {
-			mark = "weak"
-		}
-		fmt.Fprintf(stdout, "  [%s] %-34s = %-8s  %s\n", mark, o.Key, o.Value, o.Note)
+		fmt.Fprintf(stdout, "  [%-7s] %-34s = %-8s  %s\n", o.Level, o.Key, orDash(o.Value), o.Note)
 	}
 	return exitOK
 }
@@ -240,24 +236,19 @@ func cmdDrift(args []string, stdout, stderr io.Writer) int {
 
 	cur := kstate.Collector{Root: *root}.Collect()
 	changes := kstate.Diff(base, cur)
-	shown := changes
-	if !*all {
-		shown = kstate.Alerts(changes)
-	}
-	if len(shown) == 0 {
-		fmt.Fprintln(stdout, "[*] no kernel-state drift")
-		return exitOK
-	}
 	alerts := 0
-	for _, c := range shown {
-		fmt.Fprintf(stdout, "[%s] %-20s %s\n", c.Severity, c.Kind, c.Detail)
+	for _, c := range changes {
 		if c.Severity == "alert" {
 			alerts++
+		}
+		if *all || c.Severity == "alert" || c.Kind == "hook-coverage" {
+			fmt.Fprintf(stdout, "[%s] %-20s %s\n", c.Severity, c.Kind, c.Detail)
 		}
 	}
 	if alerts > 0 {
 		return exitFinding
 	}
+	fmt.Fprintln(stdout, "[*] no security-relevant kernel-state drift in compared inputs")
 	return exitOK
 }
 

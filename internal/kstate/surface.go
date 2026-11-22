@@ -68,36 +68,30 @@ func (c Collector) memChannels() []MemChannel {
 // hardeningSysctls are the knobs the posture report reads, with the direction
 // that is "hardened" and a one-line reason.
 var hardeningSysctls = []struct {
-	key      string // sysctl path under proc/sys
-	hardened string // the value considered hardened (prefix match on int)
-	note     string
+	key     string // sysctl path under proc/sys
+	minimum int    // threshold for the hardened state
+	note    string
 }{
-	{"proc/sys/kernel/kptr_restrict", "1", "kernel pointer exposure via /proc"},
-	{"proc/sys/kernel/dmesg_restrict", "1", "unprivileged dmesg (kernel log) access"},
-	{"proc/sys/kernel/kexec_load_disabled", "1", "loading a new kernel over the running one"},
-	{"proc/sys/kernel/modules_disabled", "1", "further module loading (one-way latch)"},
-	{"proc/sys/kernel/unprivileged_bpf_disabled", "1", "unprivileged eBPF (big kernel attack surface)"},
-	{"proc/sys/net/core/bpf_jit_harden", "1", "BPF JIT spraying hardening"},
-	{"proc/sys/kernel/yama/ptrace_scope", "1", "cross-process ptrace (credential theft)"},
-	{"proc/sys/kernel/perf_event_paranoid", "2", "perf_event_open exposure"},
+	{"proc/sys/kernel/kptr_restrict", 1, "kernel pointer exposure via /proc"},
+	{"proc/sys/kernel/dmesg_restrict", 1, "unprivileged dmesg (kernel log) access"},
+	{"proc/sys/kernel/kexec_load_disabled", 1, "loading a new kernel over the running one"},
+	{"proc/sys/kernel/modules_disabled", 1, "further module loading (one-way latch)"},
+	{"proc/sys/kernel/unprivileged_bpf_disabled", 1, "unprivileged eBPF (big kernel attack surface)"},
+	{"proc/sys/net/core/bpf_jit_harden", 1, "BPF JIT spraying hardening"},
+	{"proc/sys/kernel/yama/ptrace_scope", 1, "cross-process ptrace (credential theft)"},
+	{"proc/sys/kernel/perf_event_paranoid", 2, "perf_event_open exposure"},
 }
 
-func (c Collector) posture(warn *[]string) Posture {
-	p := Posture{Sysctls: map[string]string{}}
+func (c Collector) posture(warn *[]string, lsm HookTable) Posture {
+	p := Posture{Sysctls: map[string]string{}, LSM: lsm.Entries, LSMState: lsm.State}
 
 	// Lockdown is an observation whether or not it can be read: a baseline
 	// taken where lockdown was unreadable must still be able to see a later
 	// regression to "none", so the observation is emitted unconditionally with
 	// level "unknown" when the node is absent or unprivileged.
-	lockdownReadable := false
-	if v := c.readTrim("sys/kernel/security/lockdown"); v != "" {
-		p.Lockdown = parseLockdown(v)
-		lockdownReadable = true
-	} else {
+	p.Lockdown = parseLockdown(c.readTrim("sys/kernel/security/lockdown"))
+	if p.Lockdown == "" {
 		warnf(warn, "kernel lockdown state unreadable (securityfs, or kernel built without lockdown)")
-	}
-	if v := c.readTrim("sys/kernel/security/lsm"); v != "" {
-		p.LSM = strings.Split(v, ",")
 	}
 	if _, err := os.Stat(c.path("sys/kernel/security/ima")); err == nil {
 		p.IMA = true
@@ -106,13 +100,15 @@ func (c Collector) posture(warn *[]string) Posture {
 	for _, h := range hardeningSysctls {
 		raw := c.readTrim(h.key)
 		key := strings.TrimPrefix(h.key, "proc/sys/")
-		if raw == "" {
-			continue // not present on this kernel/config; not an observation
-		}
-		p.Sysctls[key] = raw
-		level := "weak"
-		if hardenedEnough(raw, h.hardened) {
-			level = "ok"
+		level := "unknown"
+		if value, err := strconv.Atoi(raw); err == nil {
+			p.Sysctls[key] = raw
+			level = "weak"
+			if value >= h.minimum {
+				level = "ok"
+			}
+		} else {
+			raw = ""
 		}
 		p.Observations = append(p.Observations, PostureNote{
 			Key: key, Value: raw, Level: level, Note: h.note,
@@ -121,7 +117,7 @@ func (c Collector) posture(warn *[]string) Posture {
 	// Lockdown is an observation too.
 	lvl := "ok"
 	switch {
-	case !lockdownReadable:
+	case p.Lockdown == "":
 		lvl = "unknown"
 	case p.Lockdown == "none":
 		lvl = "weak"
@@ -129,6 +125,18 @@ func (c Collector) posture(warn *[]string) Posture {
 	p.Observations = append(p.Observations, PostureNote{
 		Key: "lockdown", Value: p.Lockdown, Level: lvl, Note: "kernel lockdown mode",
 	})
+	moduleSigning := PostureNote{
+		Key: "module.sig_enforce", Level: "unknown", Note: "kernel module signature enforcement",
+	}
+	if data, err := readBounded(c.path("sys/module/module/parameters/sig_enforce"), 64); err == nil {
+		switch strings.TrimSpace(string(data)) {
+		case "Y", "1":
+			moduleSigning.Value, moduleSigning.Level = "Y", "ok"
+		case "N", "0":
+			moduleSigning.Value, moduleSigning.Level = "N", "weak"
+		}
+	}
+	p.Observations = append(p.Observations, moduleSigning)
 	return p
 }
 
@@ -156,21 +164,17 @@ func (c Collector) sysctlInt(rel string) *int {
 	return &n
 }
 
-func hardenedEnough(raw, want string) bool {
-	rn, err1 := strconv.Atoi(strings.Fields(raw)[0])
-	wn, err2 := strconv.Atoi(want)
-	if err1 != nil || err2 != nil {
-		return raw == want
-	}
-	return rn >= wn
-}
-
 func parseLockdown(v string) string {
 	// The file renders options with the active one in [brackets].
 	if i := strings.Index(v, "["); i >= 0 {
 		if j := strings.Index(v[i:], "]"); j > 0 {
-			return v[i+1 : i+j]
+			v = v[i+1 : i+j]
 		}
 	}
-	return v
+	switch v {
+	case "none", "integrity", "confidentiality":
+		return v
+	default:
+		return ""
+	}
 }

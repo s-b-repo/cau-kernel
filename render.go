@@ -32,6 +32,14 @@ func writeInventoryText(w io.Writer, s kstate.Snapshot) {
 	fmt.Fprintf(w, "  pinned objects : %v\n", orNone(s.BPF.PinnedObjects))
 	fmt.Fprintf(w, "  jit_harden     : %s   unprivileged_bpf_disabled: %s\n", intPtr(s.BPF.JITHarden), intPtr(s.BPF.UnprivilegedDisabled))
 
+	fmt.Fprintln(w, "\nKernel hook registrations:")
+	for _, table := range s.Hooks {
+		fmt.Fprintf(w, "  %-9s %-11s %d records (%s)\n", table.Kind, table.State, len(table.Entries), table.Source)
+		if table.Issue != "" {
+			fmt.Fprintf(w, "    %q\n", table.Issue)
+		}
+	}
+
 	fmt.Fprintf(w, "\nKernel-memory channels:\n")
 	for _, m := range s.MemChannels {
 		state := "absent"
