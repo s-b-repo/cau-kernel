@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -201,6 +202,27 @@ func TestCLISignedBaselineVerifiedWithKey(t *testing.T) {
 	if code, out, errOut := runCLI(t, "drift", "--root", root, "--baseline", b, "--pubkey", pubFile); code != exitOK || !strings.Contains(out, "verified") {
 		t.Errorf("verified drift: code=%d out=%q err=%q", code, out, errOut)
 	}
+	readDrift := func(want int) driftReport {
+		t.Helper()
+		code, out, errOut := runCLI(t, "drift", "--root", root, "--baseline", b, "--pubkey", pubFile, "--format", "json")
+		var report driftReport
+		if err := json.Unmarshal([]byte(out), &report); err != nil || code != want || errOut != "" {
+			t.Fatalf("drift JSON: code=%d out=%q err=%q decode=%v", code, out, errOut, err)
+		}
+		return report
+	}
+	initial := readDrift(exitOK)
+	if initial.SchemaVersion != "1" || initial.BaselineStatus != "verified" || initial.Scope != "fixture" ||
+		initial.ObservedAt.IsZero() || initial.Coverage != "partial" || initial.AlertCount != 0 || len(initial.Hooks) == 0 {
+		t.Fatalf("initial drift report: %+v", initial)
+	}
+	if err := os.Remove(filepath.Join(root, "sys/kernel/security/lsm")); err != nil {
+		t.Fatal(err)
+	}
+	drift := readDrift(exitFinding)
+	if drift.AlertCount == 0 || drift.Coverage != "partial" {
+		t.Fatalf("coverage loss report: %+v", drift)
+	}
 	// A different keypair's public key must fail closed: a bad signature is a
 	// finding (exit 1), not a clean report.
 	_, wrong, err := ed25519.GenerateKey(rand.Reader)
@@ -211,7 +233,7 @@ func TestCLISignedBaselineVerifiedWithKey(t *testing.T) {
 	if err := os.WriteFile(wrongFile, []byte(hex.EncodeToString(wrong[32:])), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if code, _, _ := runCLI(t, "drift", "--root", root, "--baseline", b, "--pubkey", wrongFile); code != exitFinding {
-		t.Errorf("wrong key accepted: code=%d", code)
+	if code, out, _ := runCLI(t, "drift", "--root", root, "--baseline", b, "--pubkey", wrongFile, "--format", "json"); code != exitFinding || out != "" {
+		t.Errorf("wrong key produced a drift report: code=%d out=%q", code, out)
 	}
 }

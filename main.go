@@ -42,7 +42,7 @@ Usage:
   cau-kernel inventory [--root /] [--format text|json]   full kernel-state snapshot
   cau-kernel posture   [--root /] [--format text|json]   hardening posture report
   cau-kernel baseline  --out file [--root /] [--sign-key hex]   record a (signed) baseline
-  cau-kernel drift     --baseline file [--root /] [--pubkey hex] [--all]   detect drift
+  cau-kernel drift     --baseline file [--root /] [--pubkey hex] [--all] [--format text|json]
   cau-kernel enforce   run|on|off|status    BPF-LSM execution-freeze guard (eBPF build, root)
   cau-kernel attest    show|baseline|verify  measured-boot state: TPM PCRs, IMA, kdump
   cau-kernel version
@@ -194,11 +194,15 @@ func cmdDrift(args []string, stdout, stderr io.Writer) int {
 	baseline := fs.String("baseline", "", "baseline file from `cau-kernel baseline`")
 	pubKey := fs.String("pubkey", "", "Ed25519 public key file (hex) to require + verify the baseline signature")
 	all := fs.Bool("all", false, "show info-level changes too, not just alerts")
+	format := fs.String("format", "text", "text or json")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
 	if *baseline == "" {
 		return failf(stderr, exitUsage, "--baseline is required")
+	}
+	if *format != "text" && *format != "json" {
+		return failf(stderr, exitUsage, "--format must be text or json")
 	}
 	data, err := os.ReadFile(*baseline)
 	if err != nil {
@@ -230,12 +234,21 @@ func cmdDrift(args []string, stdout, stderr io.Writer) int {
 	if err := env.Open(&base, pub); err != nil {
 		return failf(stderr, exitFinding, "baseline: %v", err) // a bad signature is a finding
 	}
+	cur := kstate.Collector{Root: *root}.Collect()
+	changes := kstate.Diff(base, cur)
+	if *format == "json" {
+		report := summarizeDrift(*root, pub != nil, cur, changes)
+		if err := writeJSON(stdout, report); err != nil {
+			return failf(stderr, exitFailed, "write drift report: %v", err)
+		}
+		if report.AlertCount > 0 {
+			return exitFinding
+		}
+		return exitOK
+	}
 	if pub != nil {
 		fmt.Fprintln(stdout, "[*] baseline signature verified")
 	}
-
-	cur := kstate.Collector{Root: *root}.Collect()
-	changes := kstate.Diff(base, cur)
 	alerts := 0
 	for _, c := range changes {
 		if c.Severity == "alert" {

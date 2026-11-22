@@ -161,6 +161,12 @@ func (c Collector) CollectPosture() Posture {
 	return c.posture(&warnings, c.lsmHooks())
 }
 
+// BootID identifies the observed kernel boot when procfs provides it.
+func (c Collector) BootID() (string, error) {
+	id, err := readBounded(c.path("proc/sys/kernel/random/boot_id"), 128)
+	return strings.TrimSpace(string(id)), err
+}
+
 // ── modules + taint ──────────────────────────────────────────────────────────
 
 func (c Collector) modules(warn *[]string) (mods []Module, sysDirs []string, hidden []string) {

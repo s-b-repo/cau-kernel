@@ -65,6 +65,15 @@ cau-kernel baseline --out /var/lib/cau-kernel/base.json --sign-key priv.hex
 cau-kernel drift    --baseline /var/lib/cau-kernel/base.json --pubkey pub.hex
 ```
 
+Add `--format json` to export a version 1 drift report. It contains alert and
+information counts, the baseline verification result, observation time and
+per-hook coverage. Detailed findings remain available in the text output.
+The report carries `scope: live` for the Linux host and `scope: fixture`
+for an alternate root. On the live host, `boot_id` identifies the current
+kernel boot when procfs provides it. Partial coverage limits the comparison
+to readable sources. An unverifiable signature prevents a report from being
+emitted. JSON counts include all findings regardless of the `--all` option.
+
 `drift` exits non-zero on a **security-relevant** change:
 
 | finding | what it means |
